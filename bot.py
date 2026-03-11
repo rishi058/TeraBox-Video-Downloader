@@ -1,11 +1,14 @@
 import os
 import re
 import json
+import random
 import asyncio
 import time
 import threading
 import logging
 from telethon import TelegramClient, events, Button
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 from terabox import prepare_terabox_link, download_terabox_file, TeraBoxError, CancelledError
 
 from dotenv import load_dotenv
@@ -459,6 +462,44 @@ async def _process_terabox(event, surl: str) -> None:
     active_tasks.pop(task_key, None)
 
 
+@bot.on(events.NewMessage(pattern="/random"))
+async def cmd_random(event):
+    with _cache_lock:
+        data = _load_cache()
+    if not data:
+        await event.respond("📭 No cached videos yet. Send a TeraBox link first!")
+        raise events.StopPropagation
+
+    surl, msg_id = random.choice(list(data.items()))
+    cached_msg = None
+    if STORAGE_GROUP_ID:
+        try:
+            cached_msg = await bot.get_messages(STORAGE_GROUP_ID, ids=msg_id)
+            if cached_msg and not (cached_msg.video or (
+                cached_msg.document
+                and cached_msg.document.mime_type
+                and "video" in cached_msg.document.mime_type
+            )):
+                cached_msg = None
+        except Exception as e:
+            log.warning(f"Random cache fetch failed for surl={surl} msg_id={msg_id}: {e}")
+            cached_msg = None
+
+    if cached_msg is None:
+        await event.respond("⚠️ Could not retrieve a cached video. Try again!")
+        raise events.StopPropagation
+
+    f = cached_msg.file
+    fname = (f.name if f and f.name else surl)
+    fsize = (format_size(f.size) if f and f.size else "N/A")
+    caption = f"🎲 **Random from cache**\n\n📦 `{fname}`\n📐 Size: **{fsize}**"
+    await bot.send_file(
+        event.chat_id, cached_msg.media,
+        caption=caption, supports_streaming=True, reply_to=event.message.id,
+    )
+    raise events.StopPropagation
+
+
 @bot.on(events.NewMessage(pattern=r"^/get(?:@\S+)?(?:\s+(.+))?$"))
 async def cmd_get(event):
     arg = (event.pattern_match.group(1) or "").strip()
@@ -491,6 +532,18 @@ async def main() -> None:
         log.warning("STORAGE_GROUP_ID not set — caching disabled, videos will be sent directly.")
 
     await bot.start(bot_token=BOT_TOKEN)
+
+    await bot(SetBotCommandsRequest(
+        scope=BotCommandScopeDefault(),
+        lang_code="",
+        commands=[
+            BotCommand(command="start", description="Start the bot"),
+            BotCommand(command="get", description="Download a TeraBox video"),
+            BotCommand(command="random", description="Get a random cached video"),
+            BotCommand(command="info", description="Show chat and user info"),
+        ],
+    ))
+    log.info("Bot commands registered.")
     log.info("Bot started! Waiting for messages... (Ctrl+C to stop)")
 
     try:
