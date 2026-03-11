@@ -1,6 +1,10 @@
 import os
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+import uvicorn
 from telethon import events
 from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
@@ -32,11 +36,11 @@ async def handle_message(event):
     await asyncio.gather(*[_process_terabox(event, surl) for surl in surls])
 
 
-# — Entry point ————————————————————————————————————————————————————————————————————
+# — Telegram bot runner ——————————————————————————————————————————————————————————————————————
 
-async def main() -> None:
+async def run_bot() -> None:
     if not BOT_TOKEN or not APP_ID or not API_HASH:
-        print("ERROR: Set BOT_TOKEN, APP_ID, and API_HASH in your .env file!")
+        log.error("ERROR: Set BOT_TOKEN, APP_ID, and API_HASH in your .env file!")
         return
 
     if not STORAGE_GROUP_ID:
@@ -55,21 +59,31 @@ async def main() -> None:
         ],
     ))
     log.info("Bot commands registered.")
-    log.info("Bot started! Waiting for messages... (Ctrl+C to stop)")
+    log.info("Bot started! Waiting for messages...")
 
+    await bot.run_until_disconnected()
+
+
+# — FastAPI app ———————————————————————————————————————————————————————————————————————————————
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    bot_task = asyncio.create_task(run_bot())
+    yield
+    bot_task.cancel()
     try:
-        await bot.run_until_disconnected()
+        await bot_task
     except asyncio.CancelledError:
         pass
-    finally:
-        log.info("Shutting down...")
-        if bot.is_connected():
-            await bot.disconnect()
-        log.info("Bye!")
+    if bot.is_connected():
+        await bot.disconnect()
+    log.info("Bye!")
 
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/ping")
+async def ping():
+    return "pong"
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    uvicorn.run(app, host="0.0.0.0", port=5000)

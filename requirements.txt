@@ -2,3 +2,5 @@ telethon
 cryptg
 requests
 python-dotenv
+fastapi
+uvicorn[standard]
