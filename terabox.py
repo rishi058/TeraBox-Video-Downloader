@@ -1,4 +1,5 @@
 import os
+import threading
 import re
 import json
 import http.cookiejar
@@ -46,6 +47,9 @@ class DownloadLinkError(TeraBoxError):
 
 class DownloadError(TeraBoxError):
     """Raised when the actual file download fails after all retries."""
+
+class CancelledError(TeraBoxError):
+    """Raised when the user cancels an in-progress operation."""
 
 
 # ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -235,10 +239,19 @@ def _resolve_dlink(session: requests.Session, dlink: str) -> str:
         return dlink
 
 
-def _download_video(url: str, dest: str) -> None:
-    """Download from a CDN URL (no cookies needed) using urllib, with 3 retries."""
+def _download_video(
+    url: str, dest: str, cancel_event: threading.Event | None = None,
+) -> None:
+    """Download from a CDN URL (no cookies needed) using urllib, with 3 retries.
+
+    If *cancel_event* is provided and gets set, the download is aborted and
+    a `CancelledError` is raised.
+    """
     for attempt in range(3):
         try:
+            if cancel_event and cancel_event.is_set():
+                raise CancelledError("Download cancelled by user.")
+
             req = urllib.request.Request(
                 url,
                 headers={
@@ -250,6 +263,8 @@ def _download_video(url: str, dest: str) -> None:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 with open(dest, "wb") as f:
                     while True:
+                        if cancel_event and cancel_event.is_set():
+                            raise CancelledError("Download cancelled by user.")
                         chunk = resp.read(256 * 1024)
                         if not chunk:
                             break
@@ -257,7 +272,9 @@ def _download_video(url: str, dest: str) -> None:
             if os.path.getsize(dest) == 0:
                 raise DownloadError("Downloaded file is empty.")
             return
-        except DownloadError:
+        except (DownloadError, CancelledError):
+            if isinstance(dest, str) and os.path.exists(dest):
+                os.remove(dest)
             raise
         except Exception as e:
             log.warning(f"Download attempt {attempt + 1}/3 failed: {e}")
@@ -341,3 +358,105 @@ def process_terabox_link(surl: str) -> dict:
         "size": size,
         "thumb": thumb,
     }
+
+
+def prepare_terabox_link(surl: str) -> dict:
+    """
+    Steps 1-3 of the pipeline: surl → metadata + dlink (NO download).
+
+    Returns a dict with:
+        filename, size, thumb, dlink, cached_path (str|None),
+        and internal keys (_session, _cdn_url, _dest) needed by
+        `download_terabox_file()`.
+    """
+    session = _make_session()
+
+    # 1. JS token
+    log.info(f"[{surl}] Fetching jsToken...")
+    js_token = _fetch_js_token(session, surl)
+    if not js_token:
+        raise TokenError("Could not extract jsToken from the share page.")
+
+    # 2. Share metadata
+    log.info(f"[{surl}] Getting share info...")
+    info = _get_share_info(session, surl, js_token)
+    if not info:
+        raise ShareInfoError(
+            "Failed to get share info (errno != 0). "
+            "Your cookies may be expired — please refresh cookies.txt."
+        )
+
+    files     = info.get("list", [])
+    shareid   = info.get("shareid", "")
+    uk        = info.get("uk", "")
+    sign      = info.get("sign", "")
+    timestamp = info.get("timestamp", "")
+    randsk    = info.get("randsk", "")
+
+    if not files:
+        raise ShareInfoError("The share contains no files.")
+
+    f        = files[0]
+    filename = f.get("server_filename", "video.mp4")
+    fs_id    = f.get("fs_id", "")
+    size     = int(f.get("size", 0))
+    thumb    = f.get("thumbs", {}).get("url3", "")
+
+    # 3. Obtain download link
+    log.info(f"[{surl}] Getting download link for '{filename}'...")
+    dlink = _get_dlink(
+        session, surl, js_token, shareid, uk, sign, timestamp, fs_id, randsk
+    )
+    if not dlink:
+        raise DownloadLinkError("Could not obtain a download link from the API.")
+
+    log.info(f"[{surl}] Download link obtained — size={size / 1024 / 1024:.1f} MB")
+
+    safe_name = re.sub(r'[<>:"/\\|?*]', "_", filename)
+    dest = str(VIDEOS_DIR / safe_name)
+
+    cached_path = dest if (os.path.exists(dest) and os.path.getsize(dest) > 0) else None
+
+    return {
+        "filename": filename,
+        "size": size,
+        "thumb": thumb,
+        "dlink": dlink,
+        "cached_path": cached_path,
+        # internal fields for download_terabox_file
+        "_session": session,
+        "_dest": dest,
+        "_surl": surl,
+    }
+
+
+def download_terabox_file(
+    prepared: dict,
+    cancel_event: threading.Event | None = None,
+) -> str:
+    """
+    Step 4: download the file using the result from `prepare_terabox_link()`.
+
+    Returns the local filepath.  If the file was already cached, returns
+    immediately.
+
+    Raises `CancelledError` if *cancel_event* is set during the download.
+    """
+    dest       = prepared["_dest"]
+    surl       = prepared["_surl"]
+    session    = prepared["_session"]
+    dlink      = prepared["dlink"]
+    cached     = prepared["cached_path"]
+
+    if cached:
+        log.info(f"[{surl}] File already cached at '{dest}', skipping download.")
+        return dest
+
+    if cancel_event and cancel_event.is_set():
+        raise CancelledError("Download cancelled by user.")
+
+    cdn_url = _resolve_dlink(session, dlink)
+    log.info(f"[{surl}] Downloading to '{dest}'...")
+    _download_video(cdn_url, dest, cancel_event=cancel_event)
+    log.info(f"[{surl}] Download complete.")
+    return dest
