@@ -1,23 +1,40 @@
-import os
-import threading
+"""
+TeraBox Video Downloader via Streaming CDN.
+
+Fetches M3U8 playlist -> extracts CDN segment URL with auth tokens ->
+modifies byte range to download full TS file -> converts TS to MP4.
+
+Public API (used by bot.py):
+    prepare_terabox_link(surl)  -> dict with file metadata
+    download_terabox_file(prepared, cancel_event) -> local mp4 path
+"""
 import re
 import json
 import http.cookiejar
 import time
 import random
-import logging
-import urllib.request
-from urllib.parse import unquote
-from pathlib import Path
-
+import subprocess
+import os
+import threading
+from urllib.parse import unquote, urlparse, urlunparse, urlencode, parse_qs
 import requests
 
-# ─── Configuration ────────────────────────────────────────────────────────────
-COOKIES_FILE = Path(__file__).parent / "cookies.txt"
+
+# ── Custom Exceptions ─────────────────────────────────────────────────────────
+class TeraBoxError(Exception):
+    """Raised for known, expected TeraBox errors."""
+
+
+class CancelledError(Exception):
+    """Raised when a download is cancelled."""
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
 BASE_DOMAIN = "dm.1024tera.com"
 BASE_URL = f"https://{BASE_DOMAIN}"
-VIDEOS_DIR = Path(__file__).parent / "videos"
-VIDEOS_DIR.mkdir(exist_ok=True)
+COOKIES_FILE = "cookies.txt"
+STORAGE_DIR = "storage"
+QUALITIES = ["M3U8_AUTO_1080", "M3U8_AUTO_720", "M3U8_AUTO_480", "M3U8_AUTO_360"]
 
 UA = (
     "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
@@ -25,438 +42,250 @@ UA = (
     "Chrome/143.0.0.0 Mobile Safari/537.36"
 )
 
-log = logging.getLogger(__name__)
+
+# ── Internal Helpers ──────────────────────────────────────────────────────────
+def _logid() -> str:
+    return str(random.randint(400_000_000_000_000_000, 999_999_999_999_999_999))
 
 
-# ─── Custom Exceptions ────────────────────────────────────────────────────────
-
-class TeraBoxError(Exception):
-    """Base exception for all TeraBox-related errors."""
-
-class CookieError(TeraBoxError):
-    """Raised when cookies are missing, unreadable, or invalid."""
-
-class TokenError(TeraBoxError):
-    """Raised when jsToken extraction from the share page fails."""
-
-class ShareInfoError(TeraBoxError):
-    """Raised when share metadata cannot be retrieved or parsed."""
-
-class DownloadLinkError(TeraBoxError):
-    """Raised when the download link (dlink) cannot be obtained."""
-
-class DownloadError(TeraBoxError):
-    """Raised when the actual file download fails after all retries."""
-
-class CancelledError(TeraBoxError):
-    """Raised when the user cancels an in-progress operation."""
+def _cookie_str(session: requests.Session) -> str:
+    return "; ".join(
+        f"{c.name}={c.value}" for c in session.cookies
+        if "1024tera" in (c.domain or "")
+    )
 
 
-# ─── Internal helpers ─────────────────────────────────────────────────────────
+def _headers(session: requests.Session, surl: str = "") -> dict:
+    return {
+        "User-Agent": UA,
+        "Cookie": _cookie_str(session),
+        "Referer": f"{BASE_URL}/wap/share/filelist?surl={surl}" if surl else BASE_URL,
+    }
 
-def _make_session() -> requests.Session:
-    if not COOKIES_FILE.exists():
-        raise CookieError(
-            f"Cookies file not found: {COOKIES_FILE}. "
-            "Export your browser cookies for 1024tera.com as cookies.txt."
-        )
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+# ── Core Pipeline ─────────────────────────────────────────────────────────────
+def load_session() -> requests.Session:
     session = requests.Session()
     jar = http.cookiejar.MozillaCookieJar()
-    try:
-        jar.load(str(COOKIES_FILE), ignore_discard=True, ignore_expires=True)
-    except http.cookiejar.LoadError as e:
-        raise CookieError(f"Malformed cookies file: {e}") from e
-    except OSError as e:
-        raise CookieError(f"Could not read cookies file: {e}") from e
+    jar.load(COOKIES_FILE, ignore_discard=True, ignore_expires=True)
     for c in jar:
         session.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
     return session
 
 
-def _cookie_header(session: requests.Session) -> str:
-    return "; ".join(
-        f"{c.name}={c.value}"
-        for c in session.cookies
-        if "1024tera" in (c.domain or "")
-    )
-
-
-def _logid() -> str:
-    return str(random.randint(400_000_000_000_000_000, 999_999_999_999_999_999))
-
-
-def _api_headers(session: requests.Session, surl: str) -> dict:
-    return {
-        "User-Agent": UA,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": f"{BASE_URL}/wap/share/filelist?surl={surl}",
-        "Origin": BASE_URL,
-        "Cookie": _cookie_header(session),
-        "dp-logid": _logid(),
-    }
-
-
-def _fetch_js_token(session: requests.Session, surl: str) -> str:
+def get_js_token(session: requests.Session, surl: str) -> str:
     url = f"{BASE_URL}/wap/share/filelist?surl={surl}&clearCache=1"
-    try:
-        resp = session.get(
-            url,
-            headers={"User-Agent": UA, "Cookie": _cookie_header(session)},
-            timeout=20,
-        )
-        resp.raise_for_status()
-    except requests.Timeout as e:
-        raise TokenError("Timed out fetching the share page.") from e
-    except requests.HTTPError as e:
-        raise TokenError(f"HTTP {e.response.status_code} fetching the share page.") from e
-    except requests.RequestException as e:
-        raise TokenError(f"Network error fetching the share page: {e}") from e
-
-    m = re.search(r'fn%28%22([A-Fa-f0-9]+)%22%29', resp.text)
+    html = session.get(url, headers=_headers(session, surl), timeout=60).text
+    m = re.search(r'fn%28%22([A-Fa-f0-9]+)%22%29', html)
     if m:
         return m.group(1)
-    m = re.search(r'eval\(decodeURIComponent\(`([^`]+)`\)\)', resp.text)
+    m = re.search(r'eval\(decodeURIComponent\(`([^`]+)`\)\)', html)
     if m:
-        decoded = unquote(m.group(1))
-        m2 = re.search(r'fn\("([A-Fa-f0-9]+)"\)', decoded)
+        m2 = re.search(r'fn\("([A-Fa-f0-9]+)"\)', unquote(m.group(1)))
         if m2:
             return m2.group(1)
-    return ""
+    raise TeraBoxError("Could not extract jsToken from share page")
 
 
-def _get_share_info(session: requests.Session, surl: str, js_token: str) -> dict | None:
+def get_share_info(session: requests.Session, js_token: str, surl: str) -> dict:
     params = {
-        "app_id": "250528",
-        "shorturl": f"1{surl}",
-        "root": "1",
-        "web": "1",
-        "channel": "dubox",
-        "clienttype": "0",
-        "jsToken": js_token,
-        "t": str(int(time.time())),
-        "dp-logid": _logid(),
+        "app_id": "250528", "shorturl": f"1{surl}", "root": "1",
+        "web": "1", "channel": "dubox", "clienttype": "0",
+        "jsToken": js_token, "t": str(int(time.time())), "dp-logid": _logid(),
     }
-    try:
-        resp = session.get(
-            f"{BASE_URL}/api/shorturlinfo",
-            params=params,
-            headers=_api_headers(session, surl),
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.Timeout as e:
-        raise ShareInfoError("Timed out fetching share info.") from e
-    except requests.HTTPError as e:
-        raise ShareInfoError(f"HTTP {e.response.status_code} fetching share info.") from e
-    except requests.RequestException as e:
-        raise ShareInfoError(f"Network error fetching share info: {e}") from e
-    except ValueError as e:
-        raise ShareInfoError(f"Invalid JSON in share info response: {e}") from e
-
-    if data.get("errno") == 0:
-        return data
-    errno = data.get("errno")
-    log.warning(f"Share info returned errno={errno}")
-    return None
+    hdrs = _headers(session, surl)
+    hdrs.update({"Accept": "application/json, text/plain, */*", "Origin": BASE_URL})
+    data = session.get(
+        f"{BASE_URL}/api/shorturlinfo", params=params, headers=hdrs, timeout=60
+    ).json()
+    if data.get("errno") != 0:
+        raise TeraBoxError(f"shorturlinfo failed: errno={data.get('errno')}")
+    return data
 
 
-def _get_dlink(
-    session: requests.Session,
-    surl: str,
-    js_token: str,
-    shareid,
-    uk,
-    sign,
-    timestamp,
-    fs_id,
-    randsk: str = "",
-) -> str:
-    params = {
-        "app_id": "250528",
-        "channel": "dubox",
-        "clienttype": "0",
-        "web": "1",
-        "dp-logid": _logid(),
-        "jsToken": js_token,
-    }
-    form = {
-        "shareid": str(shareid),
-        "uk": str(uk),
-        "sign": sign,
-        "timestamp": str(timestamp),
-        "fid_list": json.dumps([int(fs_id)]),
-        "primaryid": str(shareid),
-        "extra": json.dumps({"sekey": unquote(randsk) if randsk else ""}),
-    }
-    hdrs = _api_headers(session, surl)
-    hdrs["Content-Type"] = "application/x-www-form-urlencoded"
-    try:
-        resp = session.post(
-            f"{BASE_URL}/share/download",
-            params=params,
-            data=form,
-            headers=hdrs,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.Timeout as e:
-        raise DownloadLinkError("Timed out fetching download link.") from e
-    except requests.HTTPError as e:
-        raise DownloadLinkError(f"HTTP {e.response.status_code} fetching download link.") from e
-    except requests.RequestException as e:
-        raise DownloadLinkError(f"Network error fetching download link: {e}") from e
-    except ValueError as e:
-        raise DownloadLinkError(f"Invalid JSON in download link response: {e}") from e
-
-    if data.get("errno") == 0:
-        return data.get("dlink", "")
-    errno = data.get("errno")
-    log.warning(f"Download link API returned errno={errno}")
-    return ""
+def build_streaming_url(shareid, uk, sign, timestamp, fs_id, quality: str) -> str:
+    return f"{BASE_URL}/share/streaming?" + urlencode({
+        "uk": str(uk), "shareid": str(shareid), "type": quality,
+        "fid": str(fs_id), "sign": sign, "timestamp": str(timestamp),
+        "jsToken": "", "esl": "1", "isplayer": "1", "ehps": "1",
+        "clienttype": "0", "app_id": "250528", "web": "1",
+        "channel": "dubox", "dp-logid": _logid(),
+    })
 
 
-def _resolve_dlink(session: requests.Session, dlink: str) -> str:
-    """Follow the dlink redirect (with cookies) and return the final CDN URL."""
-    try:
-        r = session.get(
-            dlink,
-            headers={
-                "User-Agent": UA,
-                "Cookie": _cookie_header(session),
-                "Accept-Encoding": "identity",
-            },
-            allow_redirects=True,
-            stream=True,
-            timeout=15,
-        )
-        r.close()
-        return r.url
-    except Exception as e:
-        log.warning(f"Failed to resolve dlink redirect, using original URL: {e}")
-        return dlink
+def fetch_full_ts_url(session: requests.Session, streaming_url: str, surl: str) -> tuple[str, int]:
+    """Fetch M3U8, extract a segment URL, rewrite range to cover the full TS file."""
+    r = session.get(streaming_url, headers=_headers(session, surl), timeout=60)
+    r.raise_for_status()
+    text = r.text.strip()
 
-
-def _download_video(
-    url: str, dest: str, cancel_event: threading.Event | None = None,
-) -> None:
-    """Download from a CDN URL (no cookies needed) using urllib, with 3 retries.
-
-    If *cancel_event* is provided and gets set, the download is aborted and
-    a `CancelledError` is raised.
-    """
-    for attempt in range(3):
+    if not text.startswith("#EXTM3U"):
         try:
+            err = json.loads(text)
+            raise TeraBoxError(f"API error: errno={err.get('errno')}, {err.get('errmsg', '')}")
+        except (json.JSONDecodeError, ValueError):
+            raise TeraBoxError(f"Unexpected response (not M3U8): {text[:200]}")
+
+    segments = [ln.strip() for ln in text.split("\n") if ln.strip() and not ln.startswith("#")]
+    if not segments:
+        raise TeraBoxError("M3U8 contains no segment URLs")
+
+    parsed = urlparse(segments[0])
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    ts_size = int(params.get("ts_size", ["0"])[0])
+    if ts_size <= 0:
+        raise TeraBoxError("Could not determine ts_size from segment URL")
+
+    # Rewrite range to cover entire file
+    params["range"] = [f"0-{ts_size - 1}"]
+    params["len"] = [str(ts_size)]
+    full_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})))
+    return full_url, ts_size
+
+
+def download_ts(
+    session: requests.Session,
+    url: str,
+    ts_path: str,
+    expected_size: int,
+    surl: str = "",
+    cancel_event: threading.Event | None = None,
+    progress_callback=None,
+) -> None:
+    """Stream-download a TS file with optional cancellation support."""
+    r = session.get(url, headers=_headers(session, surl), stream=True, timeout=300)
+    r.raise_for_status()
+    total = int(r.headers.get("Content-Length", expected_size))
+    done = 0
+    with open(ts_path, "wb") as f:
+        for chunk in r.iter_content(256 * 1024):
             if cancel_event and cancel_event.is_set():
-                raise CancelledError("Download cancelled by user.")
-
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": UA,
-                    "Accept": "*/*",
-                    "Accept-Encoding": "identity",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                with open(dest, "wb") as f:
-                    while True:
-                        if cancel_event and cancel_event.is_set():
-                            raise CancelledError("Download cancelled by user.")
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-            if os.path.getsize(dest) == 0:
-                raise DownloadError("Downloaded file is empty.")
-            return
-        except (DownloadError, CancelledError):
-            if isinstance(dest, str) and os.path.exists(dest):
-                os.remove(dest)
-            raise
-        except Exception as e:
-            log.warning(f"Download attempt {attempt + 1}/3 failed: {e}")
-            if os.path.exists(dest):
-                os.remove(dest)
-            if attempt == 2:
-                raise DownloadError(
-                    f"All 3 download attempts failed. Last error: {e}"
-                ) from e
-            time.sleep(3)
+                raise CancelledError("Download cancelled")
+            f.write(chunk)
+            done += len(chunk)
+            pct = done * 100 // total if total else 0
+            print(f"\r    {done / 1048576:.1f} / {total / 1048576:.1f} MB ({pct}%)",
+                  end="", flush=True)
+            if progress_callback:
+                progress_callback(done, total)
+    print()
+    if os.path.getsize(ts_path) < 1024:
+        os.remove(ts_path)
+        raise TeraBoxError("Downloaded file too small — likely an error response")
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
-
-def process_terabox_link(surl: str) -> dict:
-    """
-    Full pipeline: surl → dict{filename, filepath, size, thumb}.
-
-    Raises a TeraBoxError subclass on any failure so callers can
-    surface a meaningful message to the user.
-    """
-    session = _make_session()
-
-    # 1. JS token
-    log.info(f"[{surl}] Fetching jsToken...")
-    js_token = _fetch_js_token(session, surl)
-    if not js_token:
-        raise TokenError("Could not extract jsToken from the share page.")
-
-    # 2. Share metadata
-    log.info(f"[{surl}] Getting share info...")
-    info = _get_share_info(session, surl, js_token)
-    if not info:
-        raise ShareInfoError(
-            "Failed to get share info (errno != 0). "
-            "Your cookies may be expired — please refresh cookies.txt."
-        )
-
-    files     = info.get("list", [])
-    shareid   = info.get("shareid", "")
-    uk        = info.get("uk", "")
-    sign      = info.get("sign", "")
-    timestamp = info.get("timestamp", "")
-    randsk    = info.get("randsk", "")
-
-    if not files:
-        raise ShareInfoError("The share contains no files.")
-
-    # Use the first file in the share
-    f        = files[0]
-    filename = f.get("server_filename", "video.mp4")
-    fs_id    = f.get("fs_id", "")
-    size     = int(f.get("size", 0))
-    thumb    = f.get("thumbs", {}).get("url3", "")
-
-    # 3. Obtain download link
-    log.info(f"[{surl}] Getting download link for '{filename}'...")
-    dlink = _get_dlink(
-        session, surl, js_token, shareid, uk, sign, timestamp, fs_id, randsk
+def convert_ts_to_mp4(ts_path: str, mp4_path: str) -> None:
+    """Remux TS -> MP4 via ffmpeg (stream copy, no re-encode)."""
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-i", ts_path, "-c", "copy", mp4_path],
+        capture_output=True, text=True, timeout=600,
     )
-    if not dlink:
-        raise DownloadLinkError("Could not obtain a download link from the API.")
+    if proc.returncode != 0 or not os.path.exists(mp4_path):
+        err = "\n".join(proc.stderr.strip().split("\n")[-3:])
+        raise TeraBoxError(f"ffmpeg failed (exit {proc.returncode}):\n{err}")
+    os.remove(ts_path)
 
-    log.info(f"[{surl}] Download link obtained — size={size / 1024 / 1024:.1f} MB")
 
-    # 4. Download to videos/; skip if already cached
-    safe_name = re.sub(r'[<>:"/\\|?*]', "_", filename)
-    dest = str(VIDEOS_DIR / safe_name)
-
-    if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        log.info(f"[{surl}] File already cached at '{dest}', skipping download.")
-    else:
-        cdn_url = _resolve_dlink(session, dlink)
-        log.info(f"[{surl}] Downloading to '{dest}'...")
-        _download_video(cdn_url, dest)
-        log.info(f"[{surl}] Download complete.")
-
-    return {
-        "filename": filename,
-        "filepath": dest,
-        "size": size,
-        "thumb": thumb,
-    }
-
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def prepare_terabox_link(surl: str) -> dict:
     """
-    Steps 1-3 of the pipeline: surl → metadata + dlink (NO download).
+    Fetch file metadata for a TeraBox SURL.
 
-    Returns a dict with:
-        filename, size, thumb, dlink, cached_path (str|None),
-        and internal keys (_session, _cdn_url, _dest) needed by
-        `download_terabox_file()`.
+    Returns a dict with keys:
+        filename, size, fs_id, shareid, uk, sign, timestamp, session, surl
+
+    Raises TeraBoxError on any failure.
     """
-    session = _make_session()
-
-    # 1. JS token
-    log.info(f"[{surl}] Fetching jsToken...")
-    js_token = _fetch_js_token(session, surl)
-    if not js_token:
-        raise TokenError("Could not extract jsToken from the share page.")
-
-    # 2. Share metadata
-    log.info(f"[{surl}] Getting share info...")
-    info = _get_share_info(session, surl, js_token)
-    if not info:
-        raise ShareInfoError(
-            "Failed to get share info (errno != 0). "
-            "Your cookies may be expired — please refresh cookies.txt."
-        )
-
-    files     = info.get("list", [])
-    shareid   = info.get("shareid", "")
-    uk        = info.get("uk", "")
-    sign      = info.get("sign", "")
-    timestamp = info.get("timestamp", "")
-    randsk    = info.get("randsk", "")
-
+    session = load_session()
+    js_token = get_js_token(session, surl)
+    info = get_share_info(session, js_token, surl)
+    files = info.get("list", [])
     if not files:
-        raise ShareInfoError("The share contains no files.")
-
-    f        = files[0]
-    filename = f.get("server_filename", "video.mp4")
-    fs_id    = f.get("fs_id", "")
-    size     = int(f.get("size", 0))
-    thumb    = f.get("thumbs", {}).get("url3", "")
-
-    # 3. Obtain download link
-    log.info(f"[{surl}] Getting download link for '{filename}'...")
-    dlink = _get_dlink(
-        session, surl, js_token, shareid, uk, sign, timestamp, fs_id, randsk
-    )
-    if not dlink:
-        raise DownloadLinkError("Could not obtain a download link from the API.")
-
-    log.info(f"[{surl}] Download link obtained — size={size / 1024 / 1024:.1f} MB")
-
-    safe_name = re.sub(r'[<>:"/\\|?*]', "_", filename)
-    dest = str(VIDEOS_DIR / safe_name)
-
-    cached_path = dest if (os.path.exists(dest) and os.path.getsize(dest) > 0) else None
-
+        raise TeraBoxError("No files found in this share")
+    f = files[0]
     return {
-        "filename": filename,
-        "size": size,
-        "thumb": thumb,
-        "dlink": dlink,
-        "cached_path": cached_path,
-        # internal fields for download_terabox_file
-        "_session": session,
-        "_dest": dest,
-        "_surl": surl,
+        "filename": f["server_filename"],
+        "size": int(f.get("size", 0)),
+        "fs_id": f["fs_id"],
+        "shareid": info["shareid"],
+        "uk": info["uk"],
+        "sign": info["sign"],
+        "timestamp": info["timestamp"],
+        "session": session,
+        "surl": surl,
     }
 
 
 def download_terabox_file(
     prepared: dict,
     cancel_event: threading.Event | None = None,
+    progress_callback=None,
 ) -> str:
     """
-    Step 4: download the file using the result from `prepare_terabox_link()`.
+    Download the video described by `prepared` (from prepare_terabox_link).
 
-    Returns the local filepath.  If the file was already cached, returns
-    immediately.
-
-    Raises `CancelledError` if *cancel_event* is set during the download.
+    Returns the absolute path to a local MP4 file.
+    Raises TeraBoxError or CancelledError.
     """
-    dest       = prepared["_dest"]
-    surl       = prepared["_surl"]
-    session    = prepared["_session"]
-    dlink      = prepared["dlink"]
-    cached     = prepared["cached_path"]
+    surl = prepared["surl"]
+    session = prepared["session"]
+    filename = prepared["filename"]
+    safe = _safe_filename(filename)
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    mp4_path = os.path.join(STORAGE_DIR, safe if safe.lower().endswith(".mp4") else safe + ".mp4")
+    ts_path = os.path.join(STORAGE_DIR, (safe.rsplit(".", 1)[0] if "." in safe else safe) + ".ts")
 
-    if cached:
-        log.info(f"[{surl}] File already cached at '{dest}', skipping download.")
-        return dest
+    # Re-use an already-downloaded local copy to avoid re-downloading
+    if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024:
+        return mp4_path
 
-    if cancel_event and cancel_event.is_set():
-        raise CancelledError("Download cancelled by user.")
+    last_error: Exception | None = None
+    for quality in QUALITIES:
+        if cancel_event and cancel_event.is_set():
+            raise CancelledError("Download cancelled")
+        try:
+            stream_url = build_streaming_url(
+                prepared["shareid"], prepared["uk"],
+                prepared["sign"], prepared["timestamp"],
+                prepared["fs_id"], quality,
+            )
+            full_url, ts_size = fetch_full_ts_url(session, stream_url, surl)
+            download_ts(session, full_url, ts_path, ts_size, surl=surl, cancel_event=cancel_event, progress_callback=progress_callback)
+            convert_ts_to_mp4(ts_path, mp4_path)
+            return mp4_path
+        except CancelledError:
+            if os.path.exists(ts_path):
+                try:
+                    os.remove(ts_path)
+                except Exception:
+                    pass
+            raise
+        except Exception as e:
+            last_error = e
+            for p in (ts_path, mp4_path):
+                if os.path.exists(p) and os.path.getsize(p) < 1024:
+                    os.remove(p)
 
-    cdn_url = _resolve_dlink(session, dlink)
-    log.info(f"[{surl}] Downloading to '{dest}'...")
-    _download_video(cdn_url, dest, cancel_event=cancel_event)
-    log.info(f"[{surl}] Download complete.")
-    return dest
+    raise TeraBoxError(f"All quality levels failed — last error: {last_error}")
+
+
+# ── Standalone entry point ────────────────────────────────────────────────────
+def _standalone_download(surl: str) -> None:
+    print(f"[1] Preparing link (surl={surl})...")
+    prepared = prepare_terabox_link(surl)
+    filename = prepared["filename"]
+    size_mb = prepared["size"] / 1048576
+    print(f"    File: {filename} ({size_mb:.1f} MB)")
+    print("[2] Downloading...")
+    mp4_path = download_terabox_file(prepared)
+    final_mb = os.path.getsize(mp4_path) / 1048576
+    print(f"\n    Saved: {mp4_path} ({final_mb:.1f} MB)")
+
+
+if __name__ == "__main__":
+    _standalone_download("nOvK6r4RyVtnYKOxmoqp0w")
