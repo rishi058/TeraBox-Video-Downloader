@@ -44,6 +44,27 @@ async def main() -> None:
 
     await bot.start(bot_token=BOT_TOKEN)
 
+    # Pre-cache entities so Telethon can resolve STORAGE_GROUP_ID and other
+    # peers on fresh / ephemeral deployments (e.g. Render) where the session
+    # file doesn't persist between redeploys.
+    if STORAGE_GROUP_ID:
+        try:
+            await bot.get_dialogs(limit=200)
+            log.info("Dialogs cached — storage entity should now be resolvable.")
+        except Exception as e:
+            log.warning(f"Could not pre-cache dialogs: {e}")
+
+    # If SESSION_STRING is not set, print the current session string so it can
+    # be saved as an environment variable on the deployment platform.
+    if not os.environ.get("SESSION_STRING"):
+        from telethon.sessions import StringSession as _SS
+        if isinstance(bot.session, _SS):
+            log.info(
+                "Set this as SESSION_STRING on your deployment platform to persist "
+                "the entity cache across redeploys:\n%s",
+                bot.session.save(),
+            )
+
     await bot(SetBotCommandsRequest(
         scope=BotCommandScopeDefault(),
         lang_code="",
