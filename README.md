@@ -1,133 +1,143 @@
-### How to get cookies data.
+﻿# TeraBox Telegram Bot
 
-open any terabox link in desktop browser, 
-login
-open that link again such that, video perview open at once..
-while opening, keep track of network/inspect...
-observe top request [surl?....] with 200 ok status, not the one with redirect..
-extract cookies from there [Headers]
+A Telegram bot that accepts TeraBox share links and delivers the video file directly inside Telegram  no browser, no third-party site required.
 
+---
 
------------------------
+## Overview
 
-third party download 
+Users send (or paste) any TeraBox share URL to the bot. The bot resolves the link, downloads the video via the TeraBox streaming API (using browser-extracted cookies for authentication), converts the `.ts` stream to `.mp4`, and uploads it to the chat. Downloaded files are cached in a private Telegram storage group so the same link is never fetched twice.
 
-base-url : https://teraboxdl.site/
+---
 
-endpoint : /api/proxy
+## Features
 
-payload:
-'''json
+- **Auto-detect links**  paste a TeraBox URL anywhere in a message; no command needed
+- **`/get <url>`**  explicit download command; supports multiple URLs at once
+- **`/random`**  re-sends a random previously cached video
+- **`/info`**  displays current chat and user details
+- **Cancel button**  inline button to abort an in-progress download
+- **Telegram-side caching**  uploads each video once to a storage group and re-forwards on repeat requests (`cache.json` maps surl  message ID)
+- **Quality fallback**  tries 1080p  720p  480p  360p automatically
+
+---
+
+## Project Structure
+
+```
+main.py                        # Entry point  starts the bot and registers commands
+.env                           # Secrets (not committed)
+
+telegram_logic/
+  bot.py                       # TelegramClient setup, core download-and-upload pipeline
+  caching.py                   # Thread-safe local cache (surl  Telegram message ID)
+  helpers.py                   # URL extraction, size/duration formatting
+  progress_callbacks.py        # Live progress messages during download & upload
+  commands/
+    start.py                   # /start handler
+    get.py                     # /get <url> handler
+    random.py                  # /random handler
+    info.py                    # /info handler
+    cancel_download.py         # Inline "Cancel" callback handler
+
+terabox/
+  public_api.py                # Public interface: prepare_terabox_link(), download_terabox_file()
+  core_pipeline.py             # Low-level pipeline: session, JS token, share info, TS download, ffmpeg conversion
+  internal_helpers.py          # Shared utilities and custom exceptions (TeraBoxError, CancelledError)
+  terabox.py                   # Standalone CLI entry point for the terabox module
+
+sample_terabox_downloader/     # Standalone script for testing the download pipeline outside Telegram
+storage/                       # Temporary directory for downloaded files before upload
+cache.json                     # Persistent surl  message_id mapping
+cookies.txt                    # Netscape-format cookies for TeraBox authentication
+```
+
+---
+
+## Setup
+
+### 1. Prerequisites
+
+- Python 3.11+
+- `ffmpeg` available on `PATH` (used for `.ts`  `.mp4` conversion)
+
+### 2. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+`requirements.txt` includes: `telethon`, `cryptg`, `requests`, `python-dotenv`
+
+### 3. Configure environment
+
+Create a `.env` file in the project root:
+
+```env
+BOT_TOKEN=your_telegram_bot_token
+APP_ID=your_telegram_app_id
+API_HASH=your_telegram_api_hash
+STORAGE_GROUP_ID=your_private_group_id   # optional  disables caching if omitted
+```
+
+- `BOT_TOKEN`  from [@BotFather](https://t.me/BotFather)
+- `APP_ID` / `API_HASH`  from [my.telegram.org](https://my.telegram.org)
+- `STORAGE_GROUP_ID`  the numeric ID of a private group/channel the bot is admin of; used as a video store
+
+### 4. Add cookies
+
+The bot authenticates with TeraBox using browser cookies. See [Extracting Cookies](#extracting-cookies) below, then save them to `cookies.txt` in Netscape format.
+
+### 5. Run
+
+```bash
+python main.py
+```
+
+---
+
+## Extracting Cookies
+
+The TeraBox download pipeline requires authenticated session cookies. To extract them:
+
+1. Open any TeraBox share link in a **desktop browser** and log in.
+2. Open the same link again so the video preview loads.
+3. Open **DevTools  Network** tab while the page loads.
+4. Find the top-level request to `surl?...` that returns **200 OK** (not a redirect).
+5. Copy all cookies from its **Request Headers  Cookie** field into `cookies.txt`.
+
+---
+
+## Third-Party Download API (Reference)
+
+> The bot currently uses the first-party TeraBox API with cookies. The notes below document a third-party proxy (`teraboxdl.site`) explored during development.
+
+**Base URL:** `https://teraboxdl.site/`
+
+**Endpoint:** `POST /api/proxy`
+
+**Request payload:**
+```json
 {
     "url": "https://1024terabox.com/s/1nOvK6r4RyVtnYKOxmoqp0w"
 }
-'''
+```
 
-response:
-'''json
+**Response (abbreviated):**
+```json
 {
     "errno": 0,
-    "request_id": 1773206684186655,
-    "server_time": 1773206684,
-    "cfrom_id": 0,
     "list": [
         {
-            "category": 1,
-            "fs_id": 437929440985964,
-            "isdir": 0,
-            "local_ctime": 1768918478,
-            "local_mtime": 1768918478,
-            "md5": "55748686032f926f38954c0f63419a49",
-            "path": "/2026-03-08 14-21/EPORNER.COM - [HsiBo8VrLKS] Extremely Sexy Indian Girl Giving Blowjob To Boyfriend In OYO Clear Hindi Talking Don't Miss (1080).mp4",
-            "play_forbid": 0,
-            "server_ctime": 1768918477,
-            "server_filename": "EPORNER.COM - [HsiBo8VrLKS] Extremely Sexy Indian Girl Giving Blowjob To Boyfriend In OYO Clear Hindi Talking Don't Miss (1080).mp4",
-            "server_mtime": 1772950880,
+            "server_filename": "video.mp4",
             "size": 110970629,
             "formatted_size": "105.83 MB",
-            "dlink": "",
-            "direct_link": "https://api.teraboxdl.site/download?url=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D5046832482%26type%3DM3U8_AUTO_1080%26fid%3D437929440985964%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D%26timestamp%3D1773205200%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773206884&sig=cde4ffde5b8d34e2&uid=5&filename=EPORNER.COM%20-%20%5BHsiBo8VrLKS%5D%20Extremely%20Sexy%20Indian%20Girl%20Giving%20Blowjob%20To%20Boyfriend%20In%20OYO%20Clear%20Hindi%20Talking%20Don%27t%20Miss%20%281080%29.mp4",
-            "stream_url": "https://api.teraboxdl.site/get_m3u8_stream_fast?q=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D5046832482%26type%3DM3U8_AUTO_1080%26fid%3D437929440985964%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D%26timestamp%3D1773205200%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773206884&sig=cde4ffde5b8d34e2&uid=5",
-            "thumbs": {
-                "url1": "https://data.1024tera.com/thumbnail/55748686032f926f38954c0f63419a49?fid=4400071523976-250528-437929440985964&time=1773205200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=460343869371179566&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "url2": "https://data.1024tera.com/thumbnail/55748686032f926f38954c0f63419a49?fid=4400071523976-250528-437929440985964&time=1773205200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=460343869371179566&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "url3": "https://data.1024tera.com/thumbnail/55748686032f926f38954c0f63419a49?fid=4400071523976-250528-437929440985964&time=1773205200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=460343869371179566&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "icon": "https://data.1024tera.com/thumbnail/55748686032f926f38954c0f63419a49?fid=4400071523976-250528-437929440985964&time=1773205200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=460343869371179566&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video"
-            },
-            "emd5": "020cd708dsdf4b696262df2eb13e81e0"
+            "direct_link": "https://api.teraboxdl.site/download?url=...",
+            "stream_url": "https://api.teraboxdl.site/get_m3u8_stream_fast?q=..."
         }
     ],
-    "share_id": 5046832482,
-    "uk": 4400071523976,
-    "title": "Terabox Download",
-    "total_size_bytes": 110970629,
-    "total_size": "105.83 MB",
-    "lightweight": true
+    "total_size": "105.83 MB"
 }
-'''
+```
 
-
-when i click on direct_link inside broswer it starts download.
-
-download address:
-
-https://api.teraboxdl.site/download?url=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D5046832482%26type%3DM3U8_AUTO_1080%26fid%3D437929440985964%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-Rngx4mVbuGe70WGuu6dUUxtZdh0%3D%26timestamp%3D1773205200%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773206884&sig=cde4ffde5b8d34e2&uid=5&filename=EPORNER.COM%20-%20%5BHsiBo8VrLKS%5D%20Extremely%20Sexy%20Indian%20Girl%20Giving%20Blowjob%20To%20Boyfriend%20In%20OYO%20Clear%20Hindi%20Talking%20Don%27t%20Miss%20%281080%29.mp4
-
-
----------------------------------------------------------------------------------
-
-
-payload:
-'''json
-{
-    "url": "https://1024terabox.com/s/1nQ_ZSYa34UX4ptCihQN3eA"
-}
-'''
-
-response:
-'''json
-{
-    "errno": 0,
-    "request_id": 1773209260156460,
-    "server_time": 1773209260,
-    "cfrom_id": 0,
-    "list": [
-        {
-            "category": 1,
-            "fs_id": 193395331867088,
-            "isdir": 0,
-            "local_ctime": 1676305733,
-            "local_mtime": 1676305733,
-            "md5": "165818557892d4eba0f4e2658bf232d9",
-            "path": "/2026-03-08 11-43/2023-02-14-00-28-51(1).mp4",
-            "play_forbid": 0,
-            "server_ctime": 1676305733,
-            "server_filename": "2023-02-14-00-28-51(1).mp4",
-            "server_mtime": 1772941383,
-            "size": 4019365,
-            "formatted_size": "3.83 MB",
-            "dlink": "",
-            "direct_link": "https://api.teraboxdl.site/download?url=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D12499188571%26type%3DM3U8_AUTO_1080%26fid%3D193395331867088%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D%26timestamp%3D1773208800%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773209394&sig=419ab6d7ff488d1c&uid=5&filename=2023-02-14-00-28-51%281%29.mp4",
-            "stream_url": "https://api.teraboxdl.site/get_m3u8_stream_fast?q=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D12499188571%26type%3DM3U8_AUTO_1080%26fid%3D193395331867088%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D%26timestamp%3D1773208800%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773209394&sig=419ab6d7ff488d1c&uid=5",
-            "thumbs": {
-                "url1": "https://data.1024tera.com/thumbnail/165818557892d4eba0f4e2658bf232d9?fid=4400071523976-250528-193395331867088&time=1773208800&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=461035180628469788&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "url2": "https://data.1024tera.com/thumbnail/165818557892d4eba0f4e2658bf232d9?fid=4400071523976-250528-193395331867088&time=1773208800&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=461035180628469788&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "url3": "https://data.1024tera.com/thumbnail/165818557892d4eba0f4e2658bf232d9?fid=4400071523976-250528-193395331867088&time=1773208800&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=461035180628469788&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
-                "icon": "https://data.1024tera.com/thumbnail/165818557892d4eba0f4e2658bf232d9?fid=4400071523976-250528-193395331867088&time=1773208800&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=461035180628469788&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video"
-            },
-            "emd5": "79b1918c9vf3d5ba8ad177be295f2f8a"
-        }
-    ],
-    "share_id": 12499188571,
-    "uk": 4400071523976,
-    "title": "Terabox Download",
-    "total_size_bytes": 4019365,
-    "total_size": "3.83 MB",
-    "lightweight": true
-}
-'''
-
-
-download address:
-https://api.teraboxdl.site/download?url=https%3A//dm.1024tera.com/share/streaming%3Fuk%3D4400071523976%26shareid%3D12499188571%26type%3DM3U8_AUTO_1080%26fid%3D193395331867088%26sign%3DFDTAER-DCb740ccc5511e5e8fedcff06b081203-TI9N0j5O5PC%2BWgGt6lnlSORbcNM%3D%26timestamp%3D1773208800%26jsToken%3D%26esl%3D1%26isplayer%3D1%26ehps%3D1%26clienttype%3D0%26app_id%3D250528%26web%3D1%26channel%3Ddubox&ts=1773209394&sig=419ab6d7ff488d1c&uid=5&filename=2023-02-14-00-28-51%281%29.mp4 
-
+The `direct_link` value is a fully-formed download URL that triggers a file download when opened in a browser.
