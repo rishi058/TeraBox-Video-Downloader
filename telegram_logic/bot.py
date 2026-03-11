@@ -27,7 +27,14 @@ active_tasks: dict[tuple[int, str], threading.Event] = {}
 
 # — Bot Setup ————————————————————————————————————————————————————————————— 
 
-bot = TelegramClient("terabox_bot", APP_ID, API_HASH)
+bot = TelegramClient(
+    "terabox_bot",
+    APP_ID,
+    API_HASH,
+    connection_retries=5,
+    retry_delay=2,
+    auto_reconnect=True,
+)
 
 # — Cache helpers ——————————————————————————————————————————————————————————————
 
