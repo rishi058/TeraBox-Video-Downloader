@@ -4,7 +4,6 @@ import threading
 import asyncio
 import logging
 from telethon import TelegramClient, Button
-from telethon.sessions import StringSession
 
 from .helpers import format_size, format_duration
 from .caching import _cache_put, _cache_get
@@ -23,19 +22,12 @@ APP_ID = int(os.environ.get("APP_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 STORAGE_GROUP_ID = int(os.environ.get("STORAGE_GROUP_ID", "0"))
 
-# SESSION_STRING: export once from a working local session and set as env var
-# on Render (or any ephemeral-disk platform) so entity cache survives redeploys.
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-
 # — Active-task tracking (for cancel) ————————————————————————————————————————————
 active_tasks: dict[tuple[int, str], threading.Event] = {}
 
 # — Bot Setup ————————————————————————————————————————————————————————————— 
 
-bot = TelegramClient(
-    StringSession(SESSION_STRING) if SESSION_STRING else "terabox_bot",
-    APP_ID, API_HASH,
-)
+bot = TelegramClient("terabox_bot", APP_ID, API_HASH)
 
 # — Cache helpers ——————————————————————————————————————————————————————————————
 
