@@ -1,6 +1,5 @@
 import os
 import requests
-import http
 import re
 import time
 import json
@@ -9,15 +8,15 @@ import threading
 from .internal_helpers import BASE_URL, _headers, _logid, TeraBoxError, CancelledError
 from urllib.parse import unquote, urlparse, urlunparse, urlencode, parse_qs
 
-COOKIES_FILE = "cookies.txt"
- 
 # ── Core Pipeline ─────────────────────────────────────────────────────────────
 def load_session() -> requests.Session:
     session = requests.Session()
-    jar = http.cookiejar.MozillaCookieJar()
-    jar.load(COOKIES_FILE, ignore_discard=True, ignore_expires=True)
-    for c in jar:
-        session.cookies.set(c.name, c.value, domain=c.domain, path=c.path)
+    cookie_str = os.environ.get("COOKIES", "")
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, value = part.partition("=")
+            session.cookies.set(name.strip(), value.strip(), domain=".1024tera.com", path="/")
     return session
 
 

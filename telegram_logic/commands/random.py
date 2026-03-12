@@ -1,9 +1,10 @@
 import os
+import asyncio
 import random
 import logging
 from telethon import events
 from ..bot import bot
-from ..caching import _cache_lock, _load_cache
+from ..caching import get_cache
 from ..helpers import format_size
 
 from dotenv import load_dotenv
@@ -14,8 +15,7 @@ log = logging.getLogger(__name__)
 
 @bot.on(events.NewMessage(pattern="/random"))
 async def cmd_random(event):
-    with _cache_lock:
-        data = _load_cache()
+    data = await asyncio.to_thread(get_cache)
     if not data:
         await event.respond("📭 No cached videos yet. Send a TeraBox link first!")
         raise events.StopPropagation

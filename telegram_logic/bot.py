@@ -6,7 +6,7 @@ import logging
 from telethon import TelegramClient, Button
 
 from .helpers import format_size, format_duration
-from .caching import _cache_put, _cache_get
+from .caching import add_to_cache, search_in_cache
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
 
 from terabox.public_api import prepare_terabox_link, download_terabox_file, TeraBoxError, CancelledError
@@ -45,8 +45,8 @@ async def find_cached_video(surl: str):
     """
     if not STORAGE_GROUP_ID:
         return None
-    msg_id = _cache_get(surl)
-    if msg_id is None:
+    msg_id = await asyncio.to_thread(search_in_cache, surl)
+    if msg_id == -1:
         return None
     try:
         msg = await bot.get_messages(STORAGE_GROUP_ID, ids=msg_id)
@@ -142,7 +142,7 @@ async def _process_terabox(event, surl: str) -> None:
     )
 
     # — Phase 3: Download ——————————————————————————————————————————————————
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     dl_start = time.time()
     dl_progress_cb = make_download_progress_cb(status, filename, size_str, loop)
     try:
@@ -183,7 +183,7 @@ async def _process_terabox(event, surl: str) -> None:
         try:
             storage_msg = await upload_to_storage(filepath, filename, progress_cb)
             if storage_msg is not None:
-                _cache_put(surl, storage_msg.id)
+                await asyncio.to_thread(add_to_cache, surl, storage_msg.id)
         except Exception as e:
             log.error(f"Storage upload failed for surl={surl}: {e}")
             # storage_msg stays None → fall back to direct upload below

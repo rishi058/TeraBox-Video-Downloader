@@ -3,11 +3,10 @@ import re
 # Regex to match TeraBox share URLs and extract the SURL
 TERA_URL_RE = re.compile(
     r"https?://(?:[\w.-]+\.)?[\w.-]+\.[a-z]{2,}"
-    r"(?:/s/(?P<surl_path>[A-Za-z0-9_-]+)"
+    r"(?:/s/1(?P<surl_path>[A-Za-z0-9_-]+)"
     r"|/(?:sharing/link|wap/share/filelist)\?[^#]*surl=(?P<surl_param>[A-Za-z0-9_-]+))",
     re.IGNORECASE,
 )
-
 
 # — Helpers ————————————————————————————————————————————————————————————————————————
 

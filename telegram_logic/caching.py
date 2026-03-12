@@ -1,33 +1,53 @@
-import os
-import threading
+import requests
 import json
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
-# — Local surl->message_id cache (avoids bot SearchRequest restriction) ————————
+GIST_ID = os.getenv("GIST_ID", "0")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "0")
 
-CACHE_FILE = "cache.json"
+"""
+Example cache structure:
+{"itcyfhOhGMocHJv2vgaAqA": 23}
+SURL : message_id 
 
-_cache_lock = threading.Lock()
+At start cache.json will be only with {}.
+We cannot optimize here(lazy loading etc) bcz for cache system we need latest data always.
+"""
 
-def _load_cache() -> dict:
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+#------------------------------------------------------------------------------------------------------------------------------
 
+# github doesn't support partial update of gist file, so we need to read the whole file, update it and then write it back.
+def get_cache() -> dict:
+    r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    if r.status_code == 200:
+        content = r.json()["files"]["cache.json"]["content"]
+        return json.loads(content)
+    else:
+        return {}
+    
+def update_cache(data: dict):
+    requests.patch(
+        f"https://api.github.com/gists/{GIST_ID}",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json={"files": {"cache.json": {"content": json.dumps(data)}}}
+    )
 
-def _cache_put(surl: str, message_id: int) -> None:
-    with _cache_lock:
-        data = _load_cache()
-        data[surl] = message_id
-        with open(CACHE_FILE, "w") as f:
-            json.dump(data, f)
+#------------------------------------------------------------------------------------------------------------------------------
 
+def add_to_cache(key: str, value: int):
+    cache_data = get_cache()
+    cache_data[key] = value
+    update_cache(cache_data)
+ 
+def search_in_cache(key: str) -> int:
+    cache_data = get_cache()
+    return cache_data.get(key, -1)
 
-def _cache_get(surl: str) -> int | None:
-    with _cache_lock:
-        return _load_cache().get(surl)
+#------------------------------------------------------------------------------------------------------------------------------
 
-
+# if __name__ == "__main__":
+#     add_to_cache("itcyfhOhGMocHJv2vgaAqA", 23)
+#     print(search_in_cache("itcyfhOhGMocHJv2vgaAqA")) # should print 23
+#     print(search_in_cache("non_existent_key")) # should print -1
