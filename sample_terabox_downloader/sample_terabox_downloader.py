@@ -15,7 +15,8 @@ from urllib.parse import unquote, urlparse, urlunparse, urlencode, parse_qs
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SURL = "nOvK6r4RyVtnYKOxmoqp0w"
+# SURL = "nOvK6r4RyVtnYKOxmoqp0w"
+SURL = "YnhCurm3PCfnk15_PzlJYg"
 BASE_DOMAIN = "dm.1024tera.com"
 BASE_URL = f"https://{BASE_DOMAIN}"
 COOKIES_FILE = "cookies.txt"
