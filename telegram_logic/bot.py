@@ -27,7 +27,14 @@ active_tasks: dict[tuple[int, str], threading.Event] = {}
 
 # — Bot Setup ————————————————————————————————————————————————————————————— 
 
-bot = TelegramClient("terabox_bot", APP_ID, API_HASH)
+bot = TelegramClient(
+    "terabox_bot",
+    APP_ID,
+    API_HASH,
+    connection_retries=5,
+    retry_delay=2,
+    auto_reconnect=True,
+)
 
 # — Cache helpers ——————————————————————————————————————————————————————————————
 
@@ -54,16 +61,16 @@ async def find_cached_video(surl: str):
         log.warning(f"Cache fetch failed for surl={surl} msg_id={msg_id}: {e}")
         return None
     
-async def upload_to_storage(filepath: str, filename: str, surl: str, progress_cb=None):
+async def upload_to_storage(filepath: str, filename: str, progress_cb=None):
     """
     Upload a file to the storage group.
-    Caption format: 'surl:<surl>\n<filename>' — used as the cache key.
+    Caption is set to the video filename.
     Returns the sent Message.
     """
     return await bot.send_file(
         STORAGE_GROUP_ID,
         filepath,
-        caption=f"surl:{surl}\n{filename}",
+        caption=filename,
         supports_streaming=True,
         progress_callback=progress_cb,
     )
@@ -174,7 +181,7 @@ async def _process_terabox(event, surl: str) -> None:
         )
         progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
         try:
-            storage_msg = await upload_to_storage(filepath, filename, surl, progress_cb)
+            storage_msg = await upload_to_storage(filepath, filename, progress_cb)
             if storage_msg is not None:
                 _cache_put(surl, storage_msg.id)
         except Exception as e:
