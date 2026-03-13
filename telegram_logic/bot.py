@@ -96,16 +96,15 @@ async def _process_terabox(event, surl: str) -> None:
         try:
             f = cached_msg.file
             fname = (f.name if f and f.name else surl)
-            fsize = (format_size(f.size) if f and f.size else "N/A")
-            caption = f"⚡ **From cache**\n\n📦 `{fname}`\n📐 Size: **{fsize}**"
+            caption = f"📦 `{fname}`"
             await bot.send_file(
                 chat_id, cached_msg.media,
                 caption=caption, supports_streaming=True, reply_to=event.message.id,
             )
             await status.delete()
         except Exception as e:
-            log.warning(f"Cache re-send failed for surl={surl}: {e}")
-            await status.edit("❌ Failed to send cached video.")
+            log.warning(f"re-send failed for surl={surl}: {e}")
+            await status.edit("❌ Failed to send video.")
         active_tasks.pop(task_key, None)
         return
 

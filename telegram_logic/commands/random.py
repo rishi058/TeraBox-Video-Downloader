@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 async def cmd_random(event):
     data = await asyncio.to_thread(get_cache)
     if not data:
-        await event.respond("📭 No cached videos yet. Send a TeraBox link first!")
+        await event.respond("📭 No videos yet. Send a TeraBox link first!")
         raise events.StopPropagation
 
     surl, msg_id = random.choice(list(data.items()))
@@ -32,17 +32,16 @@ async def cmd_random(event):
             )):
                 cached_msg = None
         except Exception as e:
-            log.warning(f"Random cache fetch failed for surl={surl} msg_id={msg_id}: {e}")
+            log.warning(f"Random fetch failed for surl={surl} msg_id={msg_id}: {e}")
             cached_msg = None
 
     if cached_msg is None:
-        await event.respond("⚠️ Could not retrieve a cached video. Try again!")
+        await event.respond("⚠️ Could not retrieve random video. Try again!")
         raise events.StopPropagation
 
     f = cached_msg.file
     fname = (f.name if f and f.name else surl)
-    fsize = (format_size(f.size) if f and f.size else "N/A")
-    caption = f"🎲 **Random from cache**\n\n📦 `{fname}`\n📐 Size: **{fsize}**"
+    caption = f"📦 `{fname}`"
     await bot.send_file(
         event.chat_id, cached_msg.media,
         caption=caption, supports_streaming=True, reply_to=event.message.id,

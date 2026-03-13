@@ -1,7 +1,15 @@
 import os
+import sys
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+
+# Force line buffering for standard output and error to ensure print() logs 
+# show up immediately in deployment environments like Render.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
 
 from fastapi import FastAPI
 import uvicorn
@@ -54,7 +62,7 @@ async def run_bot() -> None:
         commands=[
             BotCommand(command="start", description="Start the bot"),
             BotCommand(command="get", description="Download a TeraBox video"),
-            BotCommand(command="random", description="Get a random cached video"),
+            BotCommand(command="random", description="Get a random video"),
             BotCommand(command="info", description="Show chat and user info"),
         ],
     ))

@@ -1,11 +1,14 @@
 import requests
 import json
+import logging
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
 GIST_ID = os.getenv("GIST_ID", "0")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "0")
+
+log = logging.getLogger(__name__)
 
 """
 Example cache structure:
@@ -43,6 +46,8 @@ def add_to_cache(key: str, value: int):
  
 def search_in_cache(key: str) -> int:
     cache_data = get_cache()
+    if cache_data != {}:
+        log.info(f"Cache hit for key: {key}")
     return cache_data.get(key, -1)
 
 #------------------------------------------------------------------------------------------------------------------------------
