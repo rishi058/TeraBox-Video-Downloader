@@ -16,7 +16,8 @@ def make_download_progress_cb(status_msg, filename, size_str, loop):
 
     def callback(current, total):
         now = time.time()
-        if now - last_update[0] < 3:
+        # Update every 3 seconds, or when the transfer is complete (current == total)
+        if (now - last_update[0] < 5) and (current < total):
             return
         last_update[0] = now
         pct = current / total * 100 if total else 0
@@ -44,7 +45,8 @@ def make_upload_progress_cb(status_msg, filename, size_str, loop):
 
     def callback(current, total):
         now = time.time()
-        if now - last_update[0] < 3:  # update at most every 3 seconds
+        # Update every 3 seconds, or when the transfer is complete (current == total)
+        if (now - last_update[0] < 5) and (current < total):
             return
         last_update[0] = now
         pct = current / total * 100 if total else 0

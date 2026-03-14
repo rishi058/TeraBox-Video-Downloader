@@ -46,9 +46,10 @@ def add_to_cache(key: str, value: int):
  
 def search_in_cache(key: str) -> int:
     cache_data = get_cache()
-    if cache_data != {}:
+    value = cache_data.get(key, -1)
+    if value != -1:
         log.info(f"Cache hit for key: {key}")
-    return cache_data.get(key, -1)
+    return value
 
 #------------------------------------------------------------------------------------------------------------------------------
 

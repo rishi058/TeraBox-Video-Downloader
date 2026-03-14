@@ -1,15 +1,7 @@
 import os
-import sys
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-
-# Force line buffering for standard output and error to ensure print() logs 
-# show up immediately in deployment environments like Render.
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(line_buffering=True)
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(line_buffering=True)
 
 from fastapi import FastAPI
 import uvicorn
@@ -41,7 +33,10 @@ async def handle_message(event):
     surls = extract_all_surls(text)
     if not surls:
         return  # silently ignore non-TeraBox messages
-    await asyncio.gather(*[_process_terabox(event, surl) for surl in surls])
+    try:
+        await asyncio.gather(*[_process_terabox(event, surl) for surl in surls])
+    except Exception as e:
+        log.error(f"Unhandled error in handle_message: {e}")
 
 
 # — Telegram bot runner ——————————————————————————————————————————————————————————————————————

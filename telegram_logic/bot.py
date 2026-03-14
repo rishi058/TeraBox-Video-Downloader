@@ -4,6 +4,7 @@ import threading
 import asyncio
 import logging
 from telethon import TelegramClient, Button
+from telethon.errors import FloodWaitError
 
 from .helpers import format_size, format_duration
 from .caching import add_to_cache, search_in_cache
@@ -15,6 +16,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 log = logging.getLogger(__name__)
+
+from .queue import MessageQueue
+
+# — Concurrency & Flood-Wait Queue ————————————————————————————————————————————
+# We still need a semaphore because:
+# 1. Unbounded concurrency (e.g. 50 links) will instantly trigger FloodWait before any work gets done.
+# 2. Downloading/Uploading 50 videos concurrently will crash a low-spec VPS (OOM or CPU exhaustion).
+# 10 is a good high-capacity limit that balances speed with server stability.
+terabox_queue = MessageQueue(concurrency_limit=20)
+
+async def _safe_send(*args, **kwargs):
+    return await terabox_queue.safe_send(*args, **kwargs)
 
 # — Configuration —————————————————————————————————————————————————————————————
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -34,6 +47,7 @@ bot = TelegramClient(
     connection_retries=5,
     retry_delay=2,
     auto_reconnect=True,
+    flood_sleep_threshold=0,
 )
 
 # — Cache helpers ——————————————————————————————————————————————————————————————
@@ -49,7 +63,7 @@ async def find_cached_video(surl: str):
     if msg_id == -1:
         return None
     try:
-        msg = await bot.get_messages(STORAGE_GROUP_ID, ids=msg_id)
+        msg = await _safe_send(bot.get_messages, STORAGE_GROUP_ID, ids=msg_id)
         if msg and (msg.video or (
             msg.document
             and msg.document.mime_type
@@ -67,7 +81,8 @@ async def upload_to_storage(filepath: str, filename: str, progress_cb=None):
     Caption is set to the video filename.
     Returns the sent Message.
     """
-    return await bot.send_file(
+    return await _safe_send(
+        bot.send_file,
         STORAGE_GROUP_ID,
         filepath,
         caption=filename,
@@ -78,7 +93,44 @@ async def upload_to_storage(filepath: str, filename: str, progress_cb=None):
 # — Heart Function —————————————————————————————————————————————————————————————
 
 async def _process_terabox(event, surl: str) -> None:
-    """Core pipeline: cache → download → upload → deliver."""
+    """
+    Entry point: process immediately, or queue if flood-gated.
+    Users never need to re-send — queued requests auto-process.
+    """
+    # If currently in flood cooldown → queue immediately
+    rem = terabox_queue.flood_remaining()
+    if rem > 0:
+        await terabox_queue.put(event, surl)
+        try:
+            await event.respond(
+                f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
+                f"and will be processed automatically in ~{rem}s."
+            )
+        except FloodWaitError as e:
+            terabox_queue.update_flood_until(e.seconds)
+        except Exception:
+            pass
+        return
+
+    # Try processing normally under the semaphore
+    async with terabox_queue.semaphore:
+        try:
+            await _process_terabox_inner(event, surl)
+        except FloodWaitError as e:
+            # Pipeline hit flood → set cooldown, queue, notify user
+            terabox_queue.update_flood_until(e.seconds)
+            await terabox_queue.put(event, surl)
+            try:
+                await event.respond(
+                    f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
+                    f"and will be processed automatically in ~{e.seconds}s."
+                )
+            except Exception:
+                pass
+
+
+async def _process_terabox_inner(event, surl: str) -> None:
+    """Inner pipeline, runs under the concurrency semaphore."""
     chat_id = event.chat_id
     task_key = (chat_id, surl)
     total_start = time.time()
@@ -88,7 +140,7 @@ async def _process_terabox(event, surl: str) -> None:
 
     cancel_btn = [[Button.inline("❌ Cancel", data="cancel_download")]]
 
-    status = await event.respond(f"🔍 Checking cache for `{surl}`…")
+    status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
 
     # — Phase 1: Cache lookup ——————————————————————————————————————————————
     cached_msg = await find_cached_video(surl)
@@ -97,45 +149,47 @@ async def _process_terabox(event, surl: str) -> None:
             f = cached_msg.file
             fname = (f.name if f and f.name else surl)
             caption = f"📦 `{fname}`"
-            await bot.send_file(
+            await _safe_send(
+                bot.send_file,
                 chat_id, cached_msg.media,
                 caption=caption, supports_streaming=True, reply_to=event.message.id,
             )
-            await status.delete()
+            await _safe_send(status.delete)
         except Exception as e:
             log.warning(f"re-send failed for surl={surl}: {e}")
-            await status.edit("❌ Failed to send video.")
+            await _safe_send(status.edit, "❌ Failed to send video.")
         active_tasks.pop(task_key, None)
         return
 
     # — Phase 2: Prepare metadata ——————————————————————————————————————————
-    await status.edit(f"⏳ Fetching metadata for `{surl}`…", buttons=cancel_btn)
+    await _safe_send(status.edit, f"⏳ Fetching metadata for `{surl}`…", buttons=cancel_btn)
     try:
         prepared = await asyncio.to_thread(prepare_terabox_link, surl)
     except CancelledError:
-        await status.edit("🚫 Cancelled.")
+        await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
     except TeraBoxError as e:
         log.error(f"Prepare error for surl={surl}: {e}")
-        await status.edit(f"❌ Error: {e}")
+        await _safe_send(status.edit, f"❌ Error: {e}")
         active_tasks.pop(task_key, None)
         return
     except Exception as e:
         log.exception(f"Unexpected prepare error for surl={surl}")
-        await status.edit(f"❌ Unexpected error: {e}")
+        await _safe_send(status.edit, f"❌ Unexpected error: {e}")
         active_tasks.pop(task_key, None)
         return
 
     if cancel_event.is_set():
-        await status.edit("🚫 Cancelled.")
+        await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
 
     filename = prepared["filename"]
     size_str = format_size(prepared["size"])
 
-    await status.edit(
+    await _safe_send(
+        status.edit,
         f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n⬇️ Downloading… **0%**",
         buttons=cancel_btn,
     )
@@ -147,23 +201,23 @@ async def _process_terabox(event, surl: str) -> None:
     try:
         filepath = await asyncio.to_thread(download_terabox_file, prepared, cancel_event, dl_progress_cb)
     except CancelledError:
-        await status.edit("🚫 Cancelled.")
+        await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
     except TeraBoxError as e:
         log.error(f"Download error for surl={surl}: {e}")
-        await status.edit(f"❌ Download failed: {e}")
+        await _safe_send(status.edit, f"❌ Download failed: {e}")
         active_tasks.pop(task_key, None)
         return
     except Exception as e:
         log.exception(f"Unexpected download error for surl={surl}")
-        await status.edit(f"❌ Download failed: {e}")
+        await _safe_send(status.edit, f"❌ Download failed: {e}")
         active_tasks.pop(task_key, None)
         return
     dl_time = time.time() - dl_start
 
     if cancel_event.is_set():
-        await status.edit("🚫 Cancelled.")
+        await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
 
@@ -175,7 +229,8 @@ async def _process_terabox(event, surl: str) -> None:
     storage_msg = None
 
     if STORAGE_GROUP_ID:
-        await status.edit(
+        await _safe_send(
+            status.edit,
             f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading to cache… **0%**"
         )
         progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
@@ -203,7 +258,8 @@ async def _process_terabox(event, surl: str) -> None:
         up_time = time.time() - up_start
         total_time = time.time() - total_start
         try:
-            sent_video = await bot.send_file(
+            sent_video = await _safe_send(
+                bot.send_file,
                 chat_id,
                 storage_msg.media,
                 caption=_build_caption(dl_time, up_time, total_time),
@@ -214,13 +270,15 @@ async def _process_terabox(event, surl: str) -> None:
             log.warning(f"Re-send from storage failed for surl={surl}, sending directly: {e}")
 
     if sent_video is None:
-        await status.edit(
+        await _safe_send(
+            status.edit,
             f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**"
         )
         progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
         up_start = time.time()
         try:
-            sent_video = await bot.send_file(
+            sent_video = await _safe_send(
+                bot.send_file,
                 chat_id,
                 filepath,
                 caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
@@ -231,12 +289,12 @@ async def _process_terabox(event, surl: str) -> None:
             up_time = time.time() - up_start
             total_time = time.time() - total_start
             try:
-                await sent_video.edit(_build_caption(dl_time, up_time, total_time))
+                await _safe_send(sent_video.edit, _build_caption(dl_time, up_time, total_time))
             except Exception:
                 pass
         except Exception as e:
             log.error(f"Direct upload failed for surl={surl}: {e}")
-            await status.edit(f"❌ Upload failed: {e}")
+            await _safe_send(status.edit, f"❌ Upload failed: {e}")
             active_tasks.pop(task_key, None)
             return
 
@@ -249,8 +307,10 @@ async def _process_terabox(event, surl: str) -> None:
                 log.warning(f"Could not delete local file {f_path}: {e}")
 
     try:
-        await status.delete()
+        await _safe_send(status.delete)
     except Exception:
         pass
 
     active_tasks.pop(task_key, None)
+
+terabox_queue.set_processor(_process_terabox_inner)
