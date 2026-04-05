@@ -17,6 +17,16 @@ def extract_surl(text: str) -> str | None:
         return m.group("surl_path") or m.group("surl_param")
     return None
 
+def extract_all_terabox_url(text: str) -> list[str]:
+    """Extract all unique TeraBox URLs from the message text."""
+    seen: set[str] = set()
+    urls: list[str] = []
+    for m in TERA_URL_RE.finditer(text):
+        url = m.group(0)
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
 
 def extract_all_surls(text: str) -> list[str]:
     """Extract all unique SURLs from TeraBox URLs in the message text."""
@@ -46,8 +56,19 @@ def format_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration."""
     if seconds < 1:
         return f"{seconds:.1f}s"
-    minutes = int(seconds) // 60
-    secs = seconds - (minutes * 60)
+    
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
     if minutes > 0:
-        return f"{minutes}m {secs:.1f}s"
-    return f"{secs:.1f}s"
+        parts.append(f"{minutes}m")
+    if secs > 0 or not parts:
+        parts.append(f"{secs}s")
+        
+    return " ".join(parts[:2]) # Return max 2 most significant parts for nice reading

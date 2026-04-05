@@ -1,0 +1,41 @@
+{
+  "errno": 0,
+  "request_id": 1775296419359279,
+  "server_time": 1775296419,
+  "cfrom_id": 0,
+  "sign": "0c5dd9a80b9d6129c0584e4e53dfef7f2ae0f840",
+  "list": [
+    {
+      "category": 1,
+      "fs_id": 895477758106592,
+      "isdir": 0,
+      "local_ctime": 1768827970,
+      "local_mtime": 1768827970,
+      "md5": "1249716ac57e1e81db8ec105b3d94702",
+      "path": "/ladjynxlogan_1080.mp4",
+      "play_forbid": 0,
+      "server_ctime": 1768827970,
+      "server_filename": "ladjynxlogan_1080.mp4",
+      "server_mtime": 1774236501,
+      "size": 1271396035,
+      "formatted_size": "1.18 GB",
+      "direct_link": "https://autumn-resonance-9c91.ft8xgqx0rq.workers.dev?token=uMUaU5VKPHOnCvsOm96jgd3WwYdVC-JWRKQQNZkinFc0uARZ2g-okqF1cRr49rg4HqIxUtOBrg8CtzMLzGbEXWIofBdSbTUlccWXO1PmYdrW5O5tvM6pY9iwmrHtXz1krvlpezeuLFibklYACdNnb2N5wBRkj3rdRzqN8l9iQk9UzrmWhYvKadAKTMIf1_aAd-hV6jquOZihGFEzAnEczhZLaiTZ-CsnAY0Rs5yrCwRgcskIzOKHEmXVLTUzlKo9YAzbN2mIyfSkIW9zwZwrkbqwlpoU1jqjshqGuOci0ifzKPpXRsIcrZ6tRoKvu9BMId8a8NLB4wUnblbqluVAKVxxT7empQ2XfvgOdgixWi6eOETHEAz4LunLntKRbCnCeAnHSFFYFUqUbpKJPPk5gzhdSo_uBRHiYatbT2Eca7K3XOn8R3TwGEfi3kB8RYRG9lwb1CLVGucPh-TgjJ5L4HLJ-M4e-2Fdt0XnYKTiupb7F__q1bzKo1tjVcGnjkIifNDMQfksXNNfNkIyLnbGSL8_FFjuTA",
+      "stream_url": "https://api.teraboxdl.site/get_m3u8_stream_fast?token=BtfmTfPGtVtGxVHUaq4cyFHbtUH0hqggE2-m3WGqzF5D5MUhdOyfmwgS-Z0em2hCZDqzJAorAeoLgYG-QFx4kjo-kv_y6ZvrC2xNBjyjUGMNOWIyZMgk6uh5pzfd2Xn6X6Fznc3McZDWjw_lCX4HQ8qAfcM4Zd5rVqgVXSFZvTVxZ99ZZUFXxYtp38vczTkinMyOqFDKtCKrhi4sHI6XANKhzIGr6n2rhePJFyCZXUVqx6Vxx9ma0zk249WGewYaoPDa7Pb52mVStLUn7gC4U5wdpc0SLEUGY6Vz0OwrvMsG-0lySkozGiWlYw8zOMBhAigD0t30i_PD0AHdHvXjDy-CqWx3OHUQM9F9Q9SwcAQ5PN8sHqRDggZyglmzZEx6g9bcMy7pXglPQppQqhMUrlb6XJU2s17E7mhgmDXydlpv4WZdwp8eZZq2yrHmwDMXqb-a-72-cVtZ47rYn6OHiM3FQ1e6Oco8jH_MHddGl5bQBwhQPWGEehRCgKr4D4J-9ujYK1-YkoxLg8B3k4Uli-zw5P24xLOrI_xgoqqF49eRdfYIArFg5E15RUhLxviFz2i5AwAV-QhjDXf3pALGr9Q3Go_Iizz42YojYjgTpd3wkfEV6UF0gzPk4BeckLEeZH2NAwnDygAT5Q",
+      "thumbs": {
+        "url1": "https://data.teraboxpage.com/thumbnail/1249716ac57e1e81db8ec105b3d94702?fid=4401429752729-250528-895477758106592&time=1775293200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-CkSuHVQPAxxO%2FdfmGKt3EqkHerg%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=9091753888642040881&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
+        "url2": "https://data.teraboxpage.com/thumbnail/1249716ac57e1e81db8ec105b3d94702?fid=4401429752729-250528-895477758106592&time=1775293200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-CkSuHVQPAxxO%2FdfmGKt3EqkHerg%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=9091753888642040881&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
+        "url3": "https://data.teraboxpage.com/thumbnail/1249716ac57e1e81db8ec105b3d94702?fid=4401429752729-250528-895477758106592&time=1775293200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-CkSuHVQPAxxO%2FdfmGKt3EqkHerg%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=9091753888642040881&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video",
+        "icon": "https://data.teraboxpage.com/thumbnail/1249716ac57e1e81db8ec105b3d94702?fid=4401429752729-250528-895477758106592&time=1775293200&rt=sh&sign=FDTAER-DCb740ccc5511e5e8fedcff06b081203-CkSuHVQPAxxO%2FdfmGKt3EqkHerg%3D&expires=8h&chkv=0&chkbd=0&chkpc=&dp-logid=9091753888642040881&dp-callid=0&size=c850_u580&quality=100&vuk=-&ft=video"
+      },
+      "emd5": "c45d5be69re2bc85b2fa026552250cea",
+      "stream_download_url": "https://api.teraboxdl.site/download?token=luzN5-JXu0t0YoJGvYEnCsgCQpSjWCIS7NHno_aeFBwdQya9nFQDoskqYguYlzrUq_8SFm5KuDUa47qIOb7JBmjF63qKE23U3rrstHSVxCXCueteefzH29JWzL5k5H0OJf-7wR_RDhkCPU8bMnZBBaE7235vBGdb70kEeGdiu2qEVIrB2kMDnidjO88dPJ-JpUoLVyiwsFHT2adlFaqiGOyZbAKSZotnUYKIAknOP5vmPasAhqMUBwFbCIUajlHXkqt5WmiLfc_ZjJfJpEGXvEfgA0SDF31hpkZlh9Jo1ecxZq-6CpmpBBpR6BegRExP6ABP-2T6WjRo5MEaSBY1VUsk_NF1E67lnUYOzLtqTXFBFWhc9GH4CM2ulM9tih4XxNR6Yqo0K0qqsSFoxBbZg_KHgdwDdXtLiv1yA57Joh3RCAQOcuJH3h0YsmwBKYdPpLGEcyan6VlYX7r0Xhs8MwFAXqXS0VKXCl3UjuwFHj0svBC1hF1lpH0zSdnK5XO7ud9rTms41dBekRcaMdkowwPJyrTRaSKtVefd7UQ4hxi261qhCeUXpJDNuGM-tgKV7Cgq8VcN-ckbCN4kgKSlM0I3L5jV3efdMzKTDTWyBx9UdQx4rEjiKRb2cxljObT3-_8fTeFadH0dq_D90t9PeBjYoyzhSGvbdMFaj7DTVRRMSXiPyvaFFcCv_tKRvdrieQ",
+      "duration": 1985,
+      "quality": 1440
+    }
+  ],
+  "share_id": 18865619693,
+  "uk": 4401429752729,
+  "title": "Terabox Download",
+  "total_size_bytes": 1271396035,
+  "total_size": "1.18 GB"
+}

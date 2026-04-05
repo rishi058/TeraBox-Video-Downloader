@@ -12,10 +12,6 @@ class MessageQueue:
         self._queue = None
         self._worker_task = None
         self._monitor_task = None
-        self._process_callable = None
-
-    def set_processor(self, process_callable):
-        self._process_callable = process_callable
 
     def update_flood_until(self, seconds: int) -> None:
         """Extend the global flood-wait cooldown if needed."""
@@ -44,15 +40,15 @@ class MessageQueue:
                 log.info(f"[Queue Monitor] Items in queue: {qsize}")
             await asyncio.sleep(3)
 
-    async def put(self, event, surl: str):
+    async def put(self, process_callable, event, url: str, *args):
         await self._ensure_queue_worker()
-        await self._queue.put((event, surl))
+        await self._queue.put((process_callable, event, url, args))
 
     async def _queue_worker(self) -> None:
         """Background task: drains the flood queue after cooldown expires."""
         log.info("[Queue] Flood-wait queue worker started.")
         while True:
-            event, surl = await self._queue.get()
+            process_callable, event, url, args = await self._queue.get()
             try:
                 # Wait until flood cooldown is over
                 rem = self.flood_remaining()
@@ -65,22 +61,22 @@ class MessageQueue:
 
                 # Process under the concurrency semaphore
                 async with self.semaphore:
-                    if self._process_callable:
-                        await self._process_callable(event, surl)
+                    if process_callable:
+                        await process_callable(event, url, *args)
                     else:
-                        log.error("process_callable not set in MessageQueue")
+                        log.error("process_callable not set correctly in MessageQueue")
 
             except FloodWaitError as e:
                 self.update_flood_until(e.seconds)
                 log.warning(
                     f"[Queue worker] Hit FloodWait again ({e.seconds}s), "
-                    f"re-queuing surl={surl}"
+                    f"re-queuing url={url}"
                 )
-                await self._queue.put((event, surl))
+                await self._queue.put((process_callable, event, url, args))
             except Exception as ex:
-                log.error(f"[Queue worker] Error for surl={surl}: {ex}")
+                log.error(f"[Queue worker] Error for url={url}: {ex}")
                 try:
-                    await event.respond(f"❌ Failed to process `{surl}`: {ex}")
+                    await event.respond(f"❌ Failed to process `{url}`: {ex}")
                 except Exception:
                     pass
             finally:

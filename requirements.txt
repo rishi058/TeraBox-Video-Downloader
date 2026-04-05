@@ -1,6 +1,7 @@
+# ffmpeg needed in system
 telethon
-cryptg
 requests
 python-dotenv
 fastapi
 uvicorn[standard]
+drissionpage
