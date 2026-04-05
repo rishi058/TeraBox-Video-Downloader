@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  botservice:
+    build: .
+    container_name: botservice
+    env_file: .env
+    
+    ports:
+      - "5000:5000"
+
+# docker-compose up -d --build
+# docker-compose down

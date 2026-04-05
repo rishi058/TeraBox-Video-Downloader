@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome (Required for DrissionPage)
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
@@ -32,5 +32,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all the application files into the container
 COPY . .
 
-# xvfb-run fakes a display so DrissionPage can run in "headed" mode seamlessly.
-CMD ["xvfb-run", "-a", "python", "main.py"]
+# Start Xvfb in the background, set DISPLAY, and run the app
+CMD sh -c "Xvfb :99 -screen 0 1280x1024x24 -ac & export DISPLAY=:99 && python main.py"
