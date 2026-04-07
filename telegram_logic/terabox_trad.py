@@ -66,10 +66,11 @@ async def helper(event, surl: str) -> None:
 
     cancel_btn = [[Button.inline("❌ Cancel", data="cancel_download")]]
 
-    status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
 
     # — Phase 1: Cache lookup ——————————————————————————————————————————————
-    cached_msg = await _find_cached_video(surl)
+    status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
+
+    cached_msg = await _find_cached_video(surl, "get")
     if cached_msg is not None:
         try:
             f = cached_msg.file
@@ -88,7 +89,8 @@ async def helper(event, surl: str) -> None:
         return
 
     # — Phase 2: Prepare metadata ——————————————————————————————————————————
-    await _safe_send(status.edit, f"⏳ Fetching metadata for `{surl}`…", buttons=cancel_btn)
+    await _safe_send(status.edit, f"⏳ Fetching metadata…", buttons=cancel_btn)
+    
     try:
         prepared = await asyncio.to_thread(prepare_terabox_link, surl)
     except CancelledError:
@@ -163,7 +165,7 @@ async def helper(event, surl: str) -> None:
         try:
             storage_msg = await _upload_to_storage(filepath, filename, progress_cb)
             if storage_msg is not None:
-                await asyncio.to_thread(add_to_cache, surl, storage_msg.id)
+                await asyncio.to_thread(add_to_cache, surl, storage_msg.id, "get")
         except Exception as e:
             log.error(f"Storage upload failed for surl={surl}: {e}")
             # storage_msg stays None → fall back to direct upload below

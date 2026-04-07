@@ -6,11 +6,7 @@ import logging
 from telethon import TelegramClient, Button
 from telethon.errors import FloodWaitError
 
-from .helpers import format_size, format_duration
-from .caching import add_to_cache, search_in_cache
-from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
-
-from terabox.public_api import prepare_terabox_link, download_terabox_file, TeraBoxError, CancelledError
+from .caching import search_in_cache
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -52,14 +48,15 @@ bot = TelegramClient(
 
 # — Cache helpers ——————————————————————————————————————————————————————————————
 
-async def _find_cached_video(surl: str):
+async def _find_cached_video(surl: str, user_mode: str):
     """
-    Look up surl in the local cache file, then fetch the message directly by ID.
+    Look up surl in the cache buckets using the priority order for user_mode,
+    then fetch the message directly by ID.
     Returns the Telethon Message object if found, otherwise None.
     """
     if not STORAGE_GROUP_ID:
         return None
-    msg_id = await asyncio.to_thread(search_in_cache, surl)
+    msg_id = await asyncio.to_thread(search_in_cache, surl, user_mode)
     if msg_id == -1:
         return None
     try:

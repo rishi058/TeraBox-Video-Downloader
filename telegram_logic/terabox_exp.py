@@ -60,6 +60,7 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
     """Inner pipeline, runs under the concurrency semaphore."""
     chat_id = event.chat_id
     surl = extract_surl(terabox_url)
+    user_mode = "exphd" if is_hd else "exp"
     task_key = (chat_id, surl)
     total_start = time.time()
 
@@ -68,10 +69,10 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
 
     cancel_btn = [[Button.inline("❌ Cancel", data="cancel_download")]]
 
+    # — Phase 1: Cache lookup ——————————————————————————————————————————————
     status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
 
-    # — Phase 1: Cache lookup ——————————————————————————————————————————————
-    cached_msg = await _find_cached_video(surl)
+    cached_msg = await _find_cached_video(surl, user_mode)
     if cached_msg is not None:
         try:
             f = cached_msg.file
@@ -90,6 +91,8 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
         return
 
     # — Phase 2: Prepare metadata ——————————————————————————————————————————
+    await _safe_send(status.edit, f"⏳ Fetching metadata…", buttons=cancel_btn)
+
     #! GET FILE INFO
     try:
         info = await asyncio.to_thread(get_video_info, terabox_url, is_hd)
@@ -152,7 +155,7 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
         try:
             storage_msg = await _upload_to_storage(filepath, filename, progress_cb)
             if storage_msg is not None:
-                await asyncio.to_thread(add_to_cache, surl, storage_msg.id)
+                await asyncio.to_thread(add_to_cache, surl, storage_msg.id, user_mode)
         except Exception as e:
             log.error(f"Storage upload failed for surl={surl}: {e}")
             # storage_msg stays None → fall back to direct upload below

@@ -22,14 +22,14 @@ async def cmd_settings(event):
     if chat_title:
         chat_type = "Channel" if getattr(chat, "broadcast", False) else "Group/Supergroup"
         chat_info = (
-            f"🏠 **Chat:** {chat_title}\n"
+            f"\n🏠 **Chat Title:** {chat_title}\n"
             f"🆔 **Chat ID:** `{chat_id}`\n"
-            f"🔗 **Chat username:** {'@' + chat_username if chat_username else 'none'}\n"
-            f"📂 **Type:** {chat_type}"
+            f"🔗 **Chat Username:** {'@' + chat_username if chat_username else 'None'}\n"
+            f"📂 **Chat Type:** {chat_type}"
         )
     else:
         chat_info = (
-            f"🆔 **Pvt Chat ID:** `{chat_id}`"
+            f"\n🆔 **Private Chat ID:** `{chat_id}`"
         )
 
     current_mode = get_user_mode(chat_id)
@@ -39,13 +39,13 @@ async def cmd_settings(event):
         available_modes.remove(current_mode)  # will have 2 elements, make them button
 
     text = (
-        f"• User ID: `{user_id}`\n"
-        f"• Username: {username}\n" 
-        f"• DL Mode: {current_mode}\n"
+        f"👤 **User ID:** `{user_id}`\n"
+        f"📛 **Username:** {username}\n" 
+        f"⚙️ **Current DL Mode:** `{current_mode}`\n"
         + chat_info
     )
 
-    buttons = [[Button.inline(f"🔗 Set Mode: {mode}", data=f"setmode_{mode}")] for mode in available_modes]
+    buttons = [[Button.inline(f"🔄 Switch to {mode}", data=f"setmode_{mode}")] for mode in available_modes]
 
     await event.respond(text, buttons=buttons)
     raise events.StopPropagation
@@ -58,11 +58,11 @@ async def cb_set_mode(event):
     log.info(f"Mode Switch to {mode}, for user {chat_id}")
     set_user_mode(chat_id, mode)
     
-    await event.delete()
+    await event.delete()  
     await event.respond(
-        f"Mode switched to [{mode}]\n"
-        f"[get] : Most reliable\n"
-        f"[exp] : Backup for `get` [SLOW]\n"
-        f"[exphd] : for HD Videos [Very SLOW]"
+        f"✅ **Mode switched successfully to [{mode}]**\n\n"
+        f"➡️ **get** : Most reliable & fast\n"
+        f"➡️ **exp** : Backup for `get`[SLOW]\n"
+        f"➡️ **exphd** : For HD Videos [Very SLOW]"
     )
     raise events.StopPropagation
