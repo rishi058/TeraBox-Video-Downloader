@@ -57,6 +57,7 @@ async def handle_message(event):
         if not surls:
             return  # silently ignore non-TeraBox messages
         try:
+            log.info(f"Message redirected to [get] mode")
             await asyncio.gather(*[process_terabox(event, surl) for surl in surls])
         except Exception as e:
             log.error(f"Unhandled error in handle_message: {e}")
@@ -66,6 +67,7 @@ async def handle_message(event):
         if not terabox_url_list:
             return  # silently ignore non-TeraBox messages
         try:
+            log.info(f"Message redirected to [exp] mode")
             await asyncio.gather(*[process_terabox_experimental(event, surl) for surl in terabox_url_list])
         except Exception as e:
             log.error(f"Unhandled error in handle_message: {e}")
@@ -75,6 +77,7 @@ async def handle_message(event):
         if not terabox_url_list:
             return  # silently ignore non-TeraBox messages
         try:
+            log.info(f"Message redirected to [exphd] mode")
             await asyncio.gather(*[process_terabox_experimental(event, surl, is_hd=True) for surl in terabox_url_list])
         except Exception as e:
             log.error(f"Unhandled error in handle_message: {e}")
