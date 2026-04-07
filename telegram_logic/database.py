@@ -33,11 +33,11 @@ def set_user_mode(chat_id: int, mode: MODE):
     user_data = _get_users_gist() 
     user_data[str(chat_id)]["mode"] = mode
     _update_users_gist(user_data)
-    USERS_DATA_CACHE[chat_id] = user_data
+    USERS_DATA_CACHE[str(chat_id)] = user_data[str(chat_id)]  # store only this user's data, keyed by str
 
 # used for handling terabox messages
 def get_user_mode(chat_id: int) -> MODE:   
-    return USERS_DATA_CACHE.get(chat_id, {}).get("mode", "get")
+    return USERS_DATA_CACHE.get(str(chat_id), {}).get("mode", "get")  # use str key to match cache
 
 # used for /broadcast command
 def get_all_users() -> dict:
@@ -53,7 +53,7 @@ def track_user(chat_id: int, username: str):
         return
 
     current_time = time.time()
-    user_data = USERS_DATA_CACHE.get(chat_id, {})
+    user_data = USERS_DATA_CACHE.get(str(chat_id), {})  # use str key to match cache
     last_saved_time = user_data.get("last_active", 0.0)
 
     #! If we saved them less than 15 minutes (900s) ago, skip writing to Gist.
@@ -83,7 +83,7 @@ def track_user(chat_id: int, username: str):
     _update_users_gist(users_data)
 
     # Update local cache to reset the 15-minute timer
-    USERS_DATA_CACHE[chat_id] = users_data
+    USERS_DATA_CACHE[chat_id] = user_info  # store only this user's data, not the entire dict
 
 #!-----------------------------PRIVATE HELPERS----------------------------------
 
