@@ -1,11 +1,14 @@
 from telethon import events, Button
+import logging
 from ..bot import bot
 from ..database import set_user_mode, get_user_mode
 
+log = logging.getLogger(__name__)
 AVAILABLE_MODES = ["get", "exp", "exphd"]
 
 @bot.on(events.NewMessage(pattern="/settings"))
 async def cmd_settings(event):
+    log.info(f"Received /settings command from chat {event.chat_id}")
     sender = await event.get_sender()
     chat = await event.get_chat()
 
@@ -52,6 +55,7 @@ async def cb_set_mode(event):
     mode = event.pattern_match.group(1).decode("utf-8")
     chat_id = event.chat_id
     
+    log.info(f"Mode Switch to {mode}, for user {chat_id}")
     set_user_mode(chat_id, mode)
     
     await event.delete()

@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from telethon import events
 from ..bot import bot
 from ..helpers import TERA_URL_RE
 from ..terabox_exp import process_terabox_experimental
+
+log = logging.getLogger(__name__)
 
 def extract_all_terabox_urls(text: str) -> list[str]:
     seen: set[str] = set()
@@ -16,6 +19,8 @@ def extract_all_terabox_urls(text: str) -> list[str]:
 
 @bot.on(events.NewMessage(pattern=r"^/exp(?:@\S+)?(?:\s+(.+))?$"))
 async def cmd_get_exp(event):
+    log.info(f"Received /exp command from chat {event.chat_id}")
+
     arg = (event.pattern_match.group(1) or "").strip()
 
     terabox_url_list = extract_all_terabox_urls(arg) if arg else []

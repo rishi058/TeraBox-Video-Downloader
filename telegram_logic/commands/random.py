@@ -4,8 +4,7 @@ import random
 import logging
 from telethon import events
 from ..bot import bot
-from ..caching import get_cache
-from ..helpers import format_size
+from ..caching import get_cache_for_random
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -15,7 +14,9 @@ log = logging.getLogger(__name__)
 
 @bot.on(events.NewMessage(pattern="/random"))
 async def cmd_random(event):
-    data = await asyncio.to_thread(get_cache)
+    log.info(f"Received /random command from chat {event.chat_id}")
+
+    data = await asyncio.to_thread(get_cache_for_random)
     if not data:
         await event.respond("📭 No videos yet. Send a TeraBox link first!")
         raise events.StopPropagation

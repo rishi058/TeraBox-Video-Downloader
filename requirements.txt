@@ -4,4 +4,3 @@ requests
 python-dotenv
 fastapi
 uvicorn[standard]
-drissionpage

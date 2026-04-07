@@ -1,112 +1,44 @@
-import json
 import os
-import time
 import logging
-import platform
-import threading
-import queue
 import requests
-from DrissionPage import ChromiumPage, ChromiumOptions
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://teraboxdl.site"
-END_POINT = "/api/proxy"
-
-# — Chrome Port Pool ——————————————————————————————————————————————————————————
-# Each Chrome instance runs on its own port with its own user-data-dir.
-# This gives true concurrency (up to POOL_SIZE simultaneous Chrome sessions).
-# Increase POOL_SIZE for more parallelism, but each Chrome uses ~200-400MB RAM.
-
-CHROME_POOL_SIZE = int(os.environ.get("CHROME_POOL_SIZE", "3"))
-_CHROME_BASE_PORT = 9222
-
-_port_pool = queue.Queue()
-for _i in range(CHROME_POOL_SIZE):
-    _port_pool.put(_CHROME_BASE_PORT + _i)
-
-# log.info(f"[Chrome Pool] Initialized with {CHROME_POOL_SIZE} slots (ports {_CHROME_BASE_PORT}-{_CHROME_BASE_PORT + CHROME_POOL_SIZE - 1})")
-
+THIRD_PARTY_TERABOXDL_URL = os.getenv("THIRD_PARTY_TERABOXDL_URL")
+PROXY_URL = os.getenv("PROXY_URL")
 
 def _get_video_metadata(terabox_url: str) -> dict:
-    # Block until a port is available (acts as a bounded semaphore)
-    port = _port_pool.get()
-    log.info(f"[Chrome:{port}] Acquired slot for: {terabox_url}")
+    if not PROXY_URL:
+        raise Exception("PROXY_URL not found in ENV")
+        
+    if not THIRD_PARTY_TERABOXDL_URL:
+        raise Exception("THIRD_PARTY_TERABOXDL_URL not found in ENV")
 
-    co = ChromiumOptions()
-    co.headless(False)  # Must be False to solve Cloudflare reliably in most setups
-    co.auto_port(False)
-    co.set_local_port(port)
-    co.set_user_data_path(os.path.join(os.getcwd(), "storage", f"chrome_profile_{port}"))
+    payload = {
+        "cmd": "request.post2",
+        "base_url": f"{THIRD_PARTY_TERABOXDL_URL}",
+        "post_endpoint": "api/proxy",
+        "post_json_body": f'{{"url": "{terabox_url}"}}'
+    }
 
-    if platform.system() == 'Linux':
-        co.set_argument('--no-sandbox')
-        co.set_argument('--disable-gpu')
-        co.set_argument('--window-size=1280,720')
-        co.set_browser_path('/usr/bin/google-chrome')
-    else:
-        co.set_argument('--window-size=800,600')
+    log.info("Retrieving video metadata from proxy URL")
+    response = requests.post(PROXY_URL, json=payload, timeout=600)
 
-    page = None
-    try:
-        page = ChromiumPage(co)
-        # 1. Navigate to the main site to trigger and solve Cloudflare Turnstile
-        page.get(BASE_URL + '/')
+    if response.status_code != 200:
+        raise Exception(f"Proxy request failed with status code {response.status_code}")
 
-        # Give CF Turnstile 5-6 seconds to verify the bot
-        time.sleep(6)
+    response_dict = response.json()
+    log.info(f"Time taken: {response_dict['time_taken']}, for proxy URL to return data")
+    
+    target_url_response = response_dict.get("target_url_response")
+    if not target_url_response:
+        raise Exception(f"Missing 'target_url_response' in proxy response: {response_dict}")
 
-        # 2. Execute the API request inside the verified browser context
-        js_code = f"""
-        return fetch('{END_POINT}', {{
-            method: 'POST',
-            headers: {{
-                'Content-Type': 'application/json'
-            }},
-            body: JSON.stringify({{ url: '{terabox_url}' }})
-        }}).then(res => res.json()).catch(err => {{ return {{error: true, message: err.toString()}} }});
-        """
+    body = target_url_response.get("body")
+    if body is None:
+        raise Exception(f"Missing 'body' in target_url_response: {target_url_response}")
 
-        result = page.run_js(js_code)
-
-        if not result:
-            return {"error": True, "message": "Failed to get a response from browser JS fetch"}
-
-        return result
-
-    except MemoryError:
-        log.critical(f"[Chrome:{port}] OUT OF MEMORY while processing: {terabox_url}")
-        return {"error": True, "message": "Server out of memory — try again later"}
-    except OSError as e:
-        # Catches "Cannot allocate memory" and similar OS-level resource errors
-        log.critical(f"[Chrome:{port}] OS error (likely OOM): {e}")
-        return {"error": True, "message": f"Server resource error: {e}"}
-    except Exception as e:
-        log.error(f"[Chrome:{port}] Error: {e}")
-        return {"error": True, "message": str(e)}
-    finally:
-        if page:
-            try:
-                page.quit()
-            except Exception as quit_err:
-                log.warning(f"[Chrome:{port}] Failed to quit cleanly: {quit_err}")
-                # Force-kill any leftover Chrome process on this port
-                _force_kill_chrome(port)
-        _port_pool.put(port)
-        log.info(f"[Chrome:{port}] Released slot for: {terabox_url}")
-
-
-def _force_kill_chrome(port: int):
-    """Last-resort cleanup: kill any Chrome process bound to this debugging port."""
-    try:
-        if platform.system() == 'Windows':
-            os.system(f'netstat -ano | findstr :{port} | findstr LISTENING > nul && '
-                       f'for /f "tokens=5" %p in (\'netstat -ano ^| findstr :{port} ^| findstr LISTENING\') do taskkill /F /PID %p 2>nul')
-        else:
-            os.system(f"fuser -k {port}/tcp 2>/dev/null")
-    except Exception:
-        pass
-
+    return body
 
 def _get_file_size_bytes(stream_download_url: str) -> int:
     try:
@@ -135,18 +67,20 @@ def get_video_info(terabox_url: str, is_hd: bool) -> dict:
     if "list" not in data or not data["list"]:
         raise Exception("Video list not found or empty in metadata response")
 
+    file_info = data["list"][0]
+
     if is_hd:
         return {
-            "filename": data["list"][0]["server_filename"],
-            "size": int(data["list"][0]["size"]),
-            "download_url": data["list"][0]["direct_link"],
+            "filename": file_info.get("server_filename", "unknown"),
+            "size": int(file_info.get("size", 0)),
+            "download_url": file_info.get("direct_link", ""),
         }
     else:
-        download_url = data["list"][0]["stream_download_url"]
+        download_url = file_info.get("stream_download_url", "")
         new_file_size = _get_file_size_bytes(download_url)
 
         return {
-            "filename": data["list"][0]["server_filename"],
+            "filename": file_info.get("server_filename", "unknown"),
             "size": new_file_size,
             "download_url": download_url,
         }

@@ -12,6 +12,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
 @bot.on(events.NewMessage(pattern=r"^/broadcast(?: |$)(.*)"))
 async def cmd_broadcast(event):
+    log.info(f"Received /broadcast command from chat {event.chat_id}")
+
     # Only visible to admin
     if not ADMIN_ID or (event.sender_id != ADMIN_ID and event.chat_id != ADMIN_ID):
         # Ignore silently for non-admins
