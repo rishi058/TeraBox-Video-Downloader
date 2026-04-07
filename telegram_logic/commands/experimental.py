@@ -17,7 +17,7 @@ def extract_all_terabox_urls(text: str) -> list[str]:
             urls.append(url)
     return urls
 
-@bot.on(events.NewMessage(pattern=r"^/exp(?:@\S+)?(?:\s+(.+))?$"))
+@bot.on(events.NewMessage(pattern=r"^/exp(?:@\S+)?(?:\s+([\s\S]+))?$"))
 async def cmd_get_exp(event):
     log.info(f"Received /exp command from chat {event.chat_id}")
 
@@ -36,7 +36,7 @@ async def cmd_get_exp(event):
     raise events.StopPropagation
 
 
-@bot.on(events.NewMessage(pattern=r"(?i)^/exphd(?:@\S+)?(?:\s+(.+))?$"))
+@bot.on(events.NewMessage(pattern=r"(?i)^/exphd(?:@\S+)?(?:\s+([\s\S]+))?$"))
 async def cmd_get_exp_hd(event):
     arg = (event.pattern_match.group(1) or "").strip()
 

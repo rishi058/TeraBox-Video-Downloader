@@ -72,18 +72,37 @@ async def _find_cached_video(surl: str, user_mode: str):
         log.warning(f"Cache fetch failed for surl={surl} msg_id={msg_id}: {e}")
         return None
     
-async def _upload_to_storage(filepath: str, filename: str, progress_cb=None):
+async def _pre_upload_file(filepath: str, progress_cb=None):
+    """
+    Upload a file to Telegram's servers and return a reusable InputFile handle.
+    This avoids reading from disk multiple times when sending to both
+    storage group and user. The handle is valid for ~24h.
+    """
+    return await _safe_send(
+        bot.upload_file,
+        filepath,
+        progress_callback=progress_cb,
+    )
+
+async def _upload_to_storage(file, filename: str, progress_cb=None):
     """
     Upload a file to the storage group.
+    `file` can be a filepath (str) or a pre-uploaded InputFile handle.
     Caption is set to the video filename.
     Returns the sent Message.
     """
+    # If it's a raw filepath, upload normally (with progress).
+    # If it's an InputFile handle, progress_callback is ignored (already uploaded).
+    kwargs = {}
+    if isinstance(file, str) and progress_cb:
+        kwargs["progress_callback"] = progress_cb
+
     return await _safe_send(
         bot.send_file,
         STORAGE_GROUP_ID,
-        filepath,
+        file,
         caption=filename,
         supports_streaming=True,
-        progress_callback=progress_cb,
+        **kwargs,
     )
 

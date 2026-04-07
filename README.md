@@ -282,3 +282,21 @@ Suppose your bot goes viral in a large group, and 50 users all send a TeraBox li
    - It sees User #51's link sitting there.
    - It pulls it out, waits another 2 seconds (just to be gentle on Telegram's API so we don't instantly get blocked again), and then pushes it through the normal pipeline (`Checking cache... → Downloading... → Delivery`).
    - The user gets their video automatically without having had to type `/retry` or paste the URL a second time.
+
+
+  ---
+
+  BEFORE:
+  Phase 4: bot.send_file(filepath) → reads disk + uploads bytes to Telegram
+  Phase 5 fallback: bot.send_file(filepath) → reads disk AGAIN + uploads bytes AGAIN
+
+  AFTER:
+  Phase 4: _pre_upload_file(filepath) → reads disk once → InputFile handle
+           _upload_to_storage(handle) → sends handle (no disk read)
+  Phase 5 fallback: bot.send_file(handle) → reuses handle (no disk read, no re-upload)
+
+
+  ---
+
+  
+  

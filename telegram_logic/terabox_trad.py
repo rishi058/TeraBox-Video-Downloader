@@ -6,7 +6,7 @@ import logging
 from telethon import Button
 from telethon.errors import FloodWaitError
 
-from .bot import bot, _find_cached_video, _upload_to_storage, terabox_queue, _safe_send, active_tasks, STORAGE_GROUP_ID
+from .bot import bot, _find_cached_video, _pre_upload_file, _upload_to_storage, terabox_queue, _safe_send, active_tasks, STORAGE_GROUP_ID
 from .helpers import format_size, format_duration
 from .caching import add_to_cache
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
@@ -155,6 +155,7 @@ async def helper(event, surl: str) -> None:
     # — Phase 4: Upload to storage group (cache) ———————————————————————————
     up_start = time.time()
     storage_msg = None
+    input_file = None  # reusable Telegram upload handle
 
     if STORAGE_GROUP_ID:
         await _safe_send(
@@ -163,11 +164,14 @@ async def helper(event, surl: str) -> None:
         )
         progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
         try:
-            storage_msg = await _upload_to_storage(filepath, filename, progress_cb)
+            # Upload file bytes to Telegram ONCE → get reusable InputFile handle
+            input_file = await _pre_upload_file(filepath, progress_cb)
+            storage_msg = await _upload_to_storage(input_file, filename)
             if storage_msg is not None:
                 await asyncio.to_thread(add_to_cache, surl, storage_msg.id, "get")
         except Exception as e:
             log.error(f"Storage upload failed for surl={surl}: {e}")
+            input_file = None  # clear so fallback re-uploads from disk
             # storage_msg stays None → fall back to direct upload below
 
     # — Phase 5: Deliver to user ———————————————————————————————————————————
@@ -198,21 +202,29 @@ async def helper(event, surl: str) -> None:
             log.warning(f"Re-send from storage failed for surl={surl}, sending directly: {e}")
 
     if sent_video is None:
-        await _safe_send(
-            status.edit,
-            f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**"
-        )
-        progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
+        # Use the pre-uploaded handle if available, otherwise fall back to disk
+        upload_source = input_file if input_file else filepath
+        needs_progress = input_file is None  # only show progress if re-uploading from disk
+
+        if needs_progress:
+            await _safe_send(
+                status.edit,
+                f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**"
+            )
+        progress_cb = make_upload_progress_cb(status, filename, size_str, loop) if needs_progress else None
         up_start = time.time()
         try:
+            kwargs = {}
+            if progress_cb:
+                kwargs["progress_callback"] = progress_cb
             sent_video = await _safe_send(
                 bot.send_file,
                 chat_id,
-                filepath,
+                upload_source,
                 caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
                 supports_streaming=True,
-                progress_callback=progress_cb,
                 reply_to=event.message.id,
+                **kwargs,
             )
             up_time = time.time() - up_start
             total_time = time.time() - total_start

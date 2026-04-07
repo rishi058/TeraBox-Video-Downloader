@@ -7,7 +7,7 @@ from ..helpers import extract_all_surls
 
 log = logging.getLogger(__name__)
 
-@bot.on(events.NewMessage(pattern=r"^/get(?:@\S+)?(?:\s+(.+))?$"))
+@bot.on(events.NewMessage(pattern=r"^/get(?:@\S+)?(?:\s+([\s\S]+))?$"))
 async def cmd_get(event):
     log.info(f"Received /get command from chat {event.chat_id}")
 

@@ -1,7 +1,7 @@
 import os
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telethon import events
 from ..bot import bot
 from ..database import get_all_users
@@ -48,7 +48,8 @@ async def cmd_recent(event):
         if last_active > 0:
             ago_seconds = now - last_active
             time_ago_str = format_duration(ago_seconds) + " ago"
-            date_str = datetime.fromtimestamp(last_active).strftime("%d-%m-%y %H:%M")
+            IST = timezone(timedelta(hours=5, minutes=30))
+            date_str = datetime.fromtimestamp(last_active, tz=timezone.utc).astimezone(IST).strftime("%d-%m-%y %H:%M")
             time_ago_str = f"{date_str} ({time_ago_str})"
         else:
             time_ago_str = "Never"

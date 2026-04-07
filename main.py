@@ -14,6 +14,8 @@ from telegram_logic.terabox_exp import process_terabox_experimental
 from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url
 from telegram_logic.database import track_user, get_user_mode
 
+# — Global User Tracker ——————————————————————————————————————————————————————————————————
+
 @bot.on(events.NewMessage)
 async def global_tracker(event):
     username = None
