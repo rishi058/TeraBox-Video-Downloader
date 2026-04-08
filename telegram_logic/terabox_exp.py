@@ -6,7 +6,7 @@ import logging
 from telethon import Button
 from telethon.errors import FloodWaitError
 
-from .bot import bot, _find_cached_video, _pre_upload_file, _upload_to_storage, terabox_queue, _safe_send, active_tasks, STORAGE_GROUP_ID
+from .bot import bot, _find_cached_video, _pre_upload_file, _upload_to_storage, _cancellable, terabox_queue, _safe_send, active_tasks, STORAGE_GROUP_ID
 from .helpers import format_size, format_duration, extract_surl
 from .caching import add_to_cache
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
@@ -69,6 +69,16 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
 
     cancel_btn = [[Button.inline("❌ Cancel", data="cancel_download")]]
 
+    def _cleanup_files(*paths):
+        """Remove temp/downloaded files from disk."""
+        for p in paths:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                    log.info(f"Cleaned up file: {p}")
+                except Exception as e:
+                    log.warning(f"Could not clean up {p}: {e}")
+
     # — Phase 1: Cache lookup ——————————————————————————————————————————————
     status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
 
@@ -115,7 +125,7 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
     # — Phase 3: Download ——————————————————————————————————————————————————
     loop = asyncio.get_running_loop()
     dl_start = time.time()
-    dl_progress_cb = make_download_progress_cb(status, filename, size_str, loop)
+    dl_progress_cb = make_download_progress_cb(status, filename, size_str, loop, cancel_btn)
     try:
         filepath = await asyncio.to_thread(download_terabox_file_experimental, download_url, filename, cancel_event, dl_progress_cb)
     except CancelledError:
@@ -135,6 +145,7 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
     dl_time = time.time() - dl_start
 
     if cancel_event.is_set():
+        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
         await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
@@ -143,6 +154,12 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
     size_str = format_size(os.path.getsize(filepath))
 
     # — Phase 4: Upload to storage group (cache) ———————————————————————————
+    if cancel_event.is_set():
+        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+        await _safe_send(status.edit, "🚫 Cancelled.")
+        active_tasks.pop(task_key, None)
+        return
+
     up_start = time.time()
     storage_msg = None
     input_file = None  # reusable Telegram upload handle
@@ -150,15 +167,22 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
     if STORAGE_GROUP_ID:
         await _safe_send(
             status.edit,
-            f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading **0%**"
+            f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading **0%**",
+            buttons=cancel_btn,
         )
-        progress_cb = make_upload_progress_cb(status, filename, size_str, loop)
+        progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn)
         try:
             # Upload file bytes to Telegram ONCE → get reusable InputFile handle
-            input_file = await _pre_upload_file(filepath, progress_cb)
-            storage_msg = await _upload_to_storage(input_file, filename)
+            input_file = await _cancellable(_pre_upload_file(filepath, progress_cb), cancel_event)
+            storage_msg = await _cancellable(_upload_to_storage(input_file, filename), cancel_event)
             if storage_msg is not None:
                 await asyncio.to_thread(add_to_cache, surl, storage_msg.id, user_mode)
+        except asyncio.CancelledError:
+            log.info(f"Upload cancelled by user for surl={surl}")
+            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+            await _safe_send(status.edit, "🚫 Cancelled.")
+            active_tasks.pop(task_key, None)
+            return
         except Exception as e:
             log.error(f"Storage upload failed for surl={surl}: {e}")
             input_file = None  # clear so fallback re-uploads from disk
@@ -199,22 +223,26 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
         if needs_progress:
             await _safe_send(
                 status.edit,
-                f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**"
+                f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
+                buttons=cancel_btn,
             )
-        progress_cb = make_upload_progress_cb(status, filename, size_str, loop) if needs_progress else None
+        progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn) if needs_progress else None
         up_start = time.time()
         try:
             kwargs = {}
             if progress_cb:
                 kwargs["progress_callback"] = progress_cb
-            sent_video = await _safe_send(
-                bot.send_file,
-                chat_id,
-                upload_source,
-                caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
-                supports_streaming=True,
-                reply_to=event.message.id,
-                **kwargs,
+            sent_video = await _cancellable(
+                _safe_send(
+                    bot.send_file,
+                    chat_id,
+                    upload_source,
+                    caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
+                    supports_streaming=True,
+                    reply_to=event.message.id,
+                    **kwargs,
+                ),
+                cancel_event,
             )
             up_time = time.time() - up_start
             total_time = time.time() - total_start
@@ -222,8 +250,15 @@ async def helper(event, terabox_url: str, is_hd: bool) -> None:
                 await _safe_send(sent_video.edit, _build_caption(dl_time, up_time, total_time))
             except Exception:
                 pass
+        except asyncio.CancelledError:
+            log.info(f"Direct upload cancelled by user for surl={surl}")
+            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+            await _safe_send(status.edit, "🚫 Cancelled.")
+            active_tasks.pop(task_key, None)
+            return
         except Exception as e:
             log.error(f"Direct upload failed for surl={surl}: {e}")
+            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
             await _safe_send(status.edit, f"❌ Upload failed: {e}")
             active_tasks.pop(task_key, None)
             return

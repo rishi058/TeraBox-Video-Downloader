@@ -106,3 +106,22 @@ async def _upload_to_storage(file, filename: str, progress_cb=None):
         **kwargs,
     )
 
+
+async def _cancellable(coro, cancel_event: threading.Event, poll_interval: float = 0.5):
+    """
+    Run `coro` as a task while polling `cancel_event` (threading.Event).
+    If the event is set, cancel the task immediately.
+    Raises asyncio.CancelledError on cancellation.
+    """
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        if cancel_event.is_set():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise asyncio.CancelledError("Upload cancelled by user")
+        await asyncio.sleep(poll_interval)
+    return task.result()
+
