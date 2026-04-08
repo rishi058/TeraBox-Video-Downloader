@@ -104,6 +104,7 @@ async def run_bot() -> None:
         BotCommand(command="settings", description="View Details"),
         BotCommand(command="exp", description="[Experimental] Download TeraBox video"), 
         BotCommand(command="exphd", description="[Experimental] Download HD TeraBox video"), 
+        BotCommand(command="op", description="Send feedback to admin"),
     ]
 
     await bot(SetBotCommandsRequest(

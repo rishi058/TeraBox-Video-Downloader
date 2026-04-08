@@ -64,7 +64,7 @@ async def helper(event, surl: str) -> None:
     cancel_event = threading.Event()
     active_tasks[task_key] = cancel_event
 
-    cancel_btn = [[Button.inline("❌ Cancel", data="cancel_download")]]
+    cancel_btn = [[Button.inline("❌ Cancel", data=f"cancel:{surl}")]]
 
     def _cleanup_files(*paths):
         """Remove temp/downloaded files from disk."""

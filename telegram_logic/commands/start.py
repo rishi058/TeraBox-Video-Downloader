@@ -13,7 +13,8 @@ WELCOME_MESSAGE = (
     "🎲 **/random**  Get a random video\n"
     "🔧 **/settings**  Change default mode\n\n"
     "📥 Give me **TeraBox link(s)** (paste or forward them), I'll send the videos.\n\n"
-    "💡 You can also just send a link without any command, I'll use your default setting."
+    "💡 You can also just send a link without any command, I'll use your default setting.\n\n"
+    "📩 Send feedback to admin using **/op** <your message>"
 )
 
 @bot.on(events.NewMessage(pattern=r"^/start"))
