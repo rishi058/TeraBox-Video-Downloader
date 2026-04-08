@@ -1,6 +1,7 @@
 test_downloads
 storage
 videos
+storage
 __pycache__
 .env
 terabox_bot.session 
