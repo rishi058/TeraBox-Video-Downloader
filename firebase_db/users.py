@@ -26,6 +26,7 @@ from google.cloud.firestore_v1 import DELETE_FIELD  # noqa: F401 — available i
 from firebase_admin import firestore as _fs
 
 from .db import db
+from .write_queue import write_queue
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ def track_user(chat_id: int, username: str | None) -> None:
 
         if is_new_user:
             # Cold-start: check Firestore to avoid overwriting an existing user
+            # (read is NOT queued — reads don't cause rate-limit issues)
             snap = ref.get()
             if snap.exists:
                 existing = snap.to_dict()
@@ -80,25 +82,25 @@ def track_user(chat_id: int, username: str | None) -> None:
                 last_saved = existing.get("last_active", 0.0)
                 if (current_time - last_saved) < _WRITE_DEBOUNCE_SECONDS:
                     return  # Already updated recently — no write needed
-                # Update only last_active for returning user
-                ref.update({"last_active": current_time})
+                # Update only last_active — fire-and-forget via queue
+                write_queue.enqueue_nowait(ref.update, {"last_active": current_time})
                 _USERS_CACHE[uid] = {**existing, "last_active": current_time}
                 log.debug(f"Updated last_active for existing user {uid} ({username})")
                 return
             else:
-                # Brand-new user
+                # Brand-new user — fire-and-forget via queue
                 user_data = {
                     "username":    username,
                     "last_active": current_time,
                     "mode":        "get",
                 }
-                ref.set(user_data)
+                write_queue.enqueue_nowait(ref.set, user_data)
                 _USERS_CACHE[uid] = user_data
                 log.info(f"Registered new user {uid} ({username})")
                 return
 
-        # Returning user past debounce window — partial update
-        ref.update({"last_active": current_time})
+        # Returning user past debounce window — fire-and-forget via queue
+        write_queue.enqueue_nowait(ref.update, {"last_active": current_time})
         _USERS_CACHE[uid]["last_active"] = current_time
         log.debug(f"Refreshed last_active for user {uid}")
 
@@ -142,21 +144,19 @@ def set_user_mode(chat_id: int, mode: MODE) -> bool:
     Raises no exceptions.
     """
     uid = str(chat_id)
-    try:
-        db.collection(_USERS_COLLECTION).document(uid).set(
-            {"mode": mode},
-            merge=True,  # Creates doc if absent; only touches "mode" field
-        )
+    ref = db.collection(_USERS_COLLECTION).document(uid)
+    # Blocking write — caller (/settings callback) needs to know if it succeeded
+    ok = write_queue.enqueue_wait(ref.set, {"mode": mode}, merge=True)
+    if ok:
         # Keep local cache in sync
         if uid in _USERS_CACHE:
             _USERS_CACHE[uid]["mode"] = mode
         else:
             _USERS_CACHE[uid] = {"mode": mode}
         log.info(f"Set mode={mode} for user {uid}")
-        return True
-    except Exception as e:
-        log.error(f"[DB] set_user_mode failed for uid={uid}: {e}")
-        return False
+    else:
+        log.error(f"[DB] set_user_mode write failed for uid={uid}")
+    return ok
 
 
 def get_all_users() -> dict[str, dict]:

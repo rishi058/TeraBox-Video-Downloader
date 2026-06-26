@@ -28,6 +28,7 @@ import time
 from typing import Literal
 
 from .db import db
+from .write_queue import write_queue
 
 log = logging.getLogger(__name__)
 
@@ -59,19 +60,19 @@ def add_to_cache(surl: str, message_id: int, user_mode: MODE) -> bool:
     Uses a single-field set with merge=True so we touch ONLY the new key —
     no read-modify-write cycle required.
 
-    Returns True on success, False on DB error. Never raises.
+    The write is submitted to the rate-limited queue (fire-and-forget).
+    Returns True immediately (optimistic) since the video is already
+    delivered; cache misses just cause a re-download, not data loss.
     """
     safe_key = _encode_key(surl)
-    try:
-        _bucket_ref(user_mode).set({safe_key: message_id}, merge=True)
-        log.debug(f"Cache add: bucket={user_mode}, surl={surl}, msg_id={message_id}")
+    ref = _bucket_ref(user_mode)
 
-        # Invalidate /random snapshot so it refreshes on next call
-        _RANDOM_SNAPSHOT["timestamp"] = 0.0
-        return True
-    except Exception as e:
-        log.error(f"[DB] add_to_cache failed for surl={surl}, mode={user_mode}: {e}")
-        return False
+    write_queue.enqueue_nowait(ref.set, {safe_key: message_id}, merge=True)
+    log.debug(f"Cache add queued: bucket={user_mode}, surl={surl}, msg_id={message_id}")
+
+    # Invalidate /random snapshot so it refreshes on next call
+    _RANDOM_SNAPSHOT["timestamp"] = 0.0
+    return True
 
 
 def search_in_cache(surl: str, user_mode: MODE) -> int:
