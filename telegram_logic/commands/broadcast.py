@@ -51,7 +51,7 @@ async def cmd_broadcast(event):
     log.info(f"Received /broadcast command from chat {event.chat_id}")
 
     # Only visible to admin
-    if not ADMIN_ID or (event.sender_id != ADMIN_ID and event.chat_id != ADMIN_ID):
+    if not ADMIN_ID or event.sender_id != ADMIN_ID:
         return
 
     # Inline text (single or multiline via escaped newlines in some clients)

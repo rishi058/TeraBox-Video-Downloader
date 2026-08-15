@@ -6,9 +6,8 @@ import logging
 from telethon import Button
 from telethon.errors import FloodWaitError
 
-from .bot import bot, _find_cached_video, _pre_upload_file, _upload_to_storage, _cancellable, terabox_queue, _safe_send, active_tasks, STORAGE_GROUP_ID
+from .bot import bot, _cancellable, terabox_queue, _safe_send, active_tasks
 from .helpers import format_size, format_duration
-from firebase_db.cache import add_to_cache
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
 
 from terabox.public_api import prepare_terabox_link, download_terabox_file, TeraBoxError, CancelledError
@@ -77,29 +76,7 @@ async def helper(event, surl: str) -> None:
                     log.warning(f"Could not clean up {p}: {e}")
 
 
-    # — Phase 1: Cache lookup ——————————————————————————————————————————————
-    status = await _safe_send(event.respond, f"🔍 Checking cache for `{surl}`…")
-
-    cached_msg = await _find_cached_video(surl, "get")
-    if cached_msg is not None:
-        try:
-            f = cached_msg.file
-            fname = (f.name if f and f.name else surl)
-            caption = f"📦 `{fname}`"
-            await _safe_send(
-                bot.send_file,
-                chat_id, cached_msg.media,
-                caption=caption, supports_streaming=True, reply_to=event.message.id,
-            )
-            await _safe_send(status.delete)
-        except Exception as e:
-            log.warning(f"re-send failed for surl={surl}: {e}")
-            await _safe_send(status.edit, "❌ Failed to send video.")
-        active_tasks.pop(task_key, None)
-        return
-
-    # — Phase 2: Prepare metadata ——————————————————————————————————————————
-    await _safe_send(status.edit, f"⏳ Fetching metadata…", buttons=cancel_btn)
+    status = await _safe_send(event.respond, "⏳ Fetching metadata…", buttons=cancel_btn)
     
     try:
         prepared = await asyncio.to_thread(prepare_terabox_link, surl)
@@ -163,42 +140,8 @@ async def helper(event, surl: str) -> None:
     # Use actual file size (compressed TS/MP4) instead of original API size
     size_str = format_size(os.path.getsize(filepath))
 
-    # — Phase 4: Upload to storage group (cache) ———————————————————————————
-    if cancel_event.is_set():
-        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
-        await _safe_send(status.edit, "🚫 Cancelled.")
-        active_tasks.pop(task_key, None)
-        return
-
-    up_start = time.time()
-    storage_msg = None
-    input_file = None  # reusable Telegram upload handle
-
-    if STORAGE_GROUP_ID:
-        await _safe_send(
-            status.edit,
-            f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading **0%**",
-            buttons=cancel_btn,
-        )
-        progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn)
-        try:
-            # Upload file bytes to Telegram ONCE → get reusable InputFile handle
-            input_file = await _cancellable(_pre_upload_file(filepath, progress_cb), cancel_event)
-            storage_msg = await _cancellable(_upload_to_storage(input_file, filename), cancel_event)
-            if storage_msg is not None:
-                await asyncio.to_thread(add_to_cache, surl, storage_msg.id, "get")
-        except asyncio.CancelledError:
-            log.info(f"Upload cancelled by user for surl={surl}")
-            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
-            await _safe_send(status.edit, "🚫 Cancelled.")
-            active_tasks.pop(task_key, None)
-            return
-        except Exception as e:
-            log.error(f"Storage upload failed for surl={surl}: {e}")
-            input_file = None  # clear so fallback re-uploads from disk
-            # storage_msg stays None → fall back to direct upload below
-
-    # — Phase 5: Deliver to user ———————————————————————————————————————————
+    # Upload directly to the user. Traditional /get has no reusable direct URL,
+    # so it is not added to the random URL catalogue.
     def _build_caption(dl_t: float, up_t: float, total_t: float) -> str:
         return (
             f"📦 `{filename}`\n"
@@ -208,70 +151,40 @@ async def helper(event, surl: str) -> None:
             f"⏱️ Total: **{format_duration(total_t)}**"
         )
 
-    sent_video = None
-
-    if storage_msg is not None:
+    await _safe_send(
+        status.edit,
+        f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
+        buttons=cancel_btn,
+    )
+    progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn)
+    up_start = time.time()
+    try:
+        sent_video = await _cancellable(
+            _safe_send(
+                bot.send_file, chat_id, filepath,
+                caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
+                supports_streaming=True, reply_to=event.message.id,
+                progress_callback=progress_cb,
+            ), cancel_event,
+        )
         up_time = time.time() - up_start
         total_time = time.time() - total_start
         try:
-            sent_video = await _safe_send(
-                bot.send_file,
-                chat_id,
-                storage_msg.media,
-                caption=_build_caption(dl_time, up_time, total_time),
-                supports_streaming=True,
-                reply_to=event.message.id,
-            )
-        except Exception as e:
-            log.warning(f"Re-send from storage failed for surl={surl}, sending directly: {e}")
-
-    if sent_video is None:
-        # Use the pre-uploaded handle if available, otherwise fall back to disk
-        upload_source = input_file if input_file else filepath
-        needs_progress = input_file is None  # only show progress if re-uploading from disk
-
-        if needs_progress:
-            await _safe_send(
-                status.edit,
-                f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
-                buttons=cancel_btn,
-            )
-        progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn) if needs_progress else None
-        up_start = time.time()
-        try:
-            kwargs = {}
-            if progress_cb:
-                kwargs["progress_callback"] = progress_cb
-            sent_video = await _cancellable(
-                _safe_send(
-                    bot.send_file,
-                    chat_id,
-                    upload_source,
-                    caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
-                    supports_streaming=True,
-                    reply_to=event.message.id,
-                    **kwargs,
-                ),
-                cancel_event,
-            )
-            up_time = time.time() - up_start
-            total_time = time.time() - total_start
-            try:
-                await _safe_send(sent_video.edit, _build_caption(dl_time, up_time, total_time))
-            except Exception:
-                pass
-        except asyncio.CancelledError:
-            log.info(f"Direct upload cancelled by user for surl={surl}")
-            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
-            await _safe_send(status.edit, "🚫 Cancelled.")
-            active_tasks.pop(task_key, None)
-            return
-        except Exception as e:
-            log.error(f"Direct upload failed for surl={surl}: {e}")
-            _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
-            await _safe_send(status.edit, f"❌ Upload failed: {e}\n\nYou can try different *mode* to download.\nSwitch *mode* from /settings")
-            active_tasks.pop(task_key, None)
-            return
+            await _safe_send(sent_video.edit, _build_caption(dl_time, up_time, total_time))
+        except Exception:
+            pass
+    except asyncio.CancelledError:
+        log.info(f"Direct upload cancelled by user for surl={surl}")
+        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+        await _safe_send(status.edit, "🚫 Cancelled.")
+        active_tasks.pop(task_key, None)
+        return
+    except Exception as e:
+        log.error(f"Direct upload failed for surl={surl}: {e}")
+        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+        await _safe_send(status.edit, f"❌ Upload failed: {e}\n\nYou can try different *mode* to download.\nSwitch *mode* from /settings")
+        active_tasks.pop(task_key, None)
+        return
 
     for f_path in (filepath, os.path.splitext(filepath)[0] + ".ts"):
         if os.path.exists(f_path):

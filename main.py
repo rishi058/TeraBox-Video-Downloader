@@ -7,7 +7,13 @@ from fastapi import FastAPI
 import uvicorn
 from telethon import events
 from telethon.tl.functions.bots import SetBotCommandsRequest
-from telethon.tl.types import BotCommand, BotCommandScopeDefault, BotCommandScopePeer
+from telethon.tl.types import (
+    BotCommand,
+    BotCommandScopeChats,
+    BotCommandScopeDefault,
+    BotCommandScopePeer,
+    BotCommandScopeUsers,
+)
 from telegram_logic.bot import bot
 from telegram_logic.terabox_trad import process_terabox
 from telegram_logic.terabox_exp import process_terabox_experimental
@@ -41,7 +47,6 @@ load_dotenv()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 APP_ID = int(os.environ.get("APP_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
-STORAGE_GROUP_ID = int(os.environ.get("STORAGE_GROUP_ID", "0"))
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO,
@@ -133,9 +138,6 @@ async def run_bot() -> None:
         log.error("ERROR: Set BOT_TOKEN, APP_ID, and API_HASH in your .env file!")
         return
 
-    if not STORAGE_GROUP_ID:
-        log.warning("STORAGE_GROUP_ID not set — caching disabled, videos will be sent directly.")
-
     await bot.start(bot_token=BOT_TOKEN)
 
     default_commands = [ 
@@ -149,11 +151,18 @@ async def run_bot() -> None:
         BotCommand(command="op", description="Send feedback to admin"),
     ]
 
-    await bot(SetBotCommandsRequest( 
-        scope=BotCommandScopeDefault(),
-        lang_code="",
-        commands=default_commands
-    ))
+    # Explicit public scopes prevent a previously registered admin command list
+    # from leaking through a broader Telegram scope.
+    for scope in (
+        BotCommandScopeDefault(),
+        BotCommandScopeUsers(),
+        BotCommandScopeChats(),
+    ):
+        await bot(SetBotCommandsRequest(
+            scope=scope,
+            lang_code="",
+            commands=default_commands,
+        ))
 
     admin_id = int(os.environ.get("ADMIN_ID", "0"))
     if admin_id:
