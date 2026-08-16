@@ -1,6 +1,6 @@
 # TeraBox / Diskwala Video Downloader
 
-Downloads full-length videos from **TeraBox** (and its mirror domains) and **Diskwala**, then delivers them through Telegram — caching each video once in a storage group and re-forwarding it on repeat requests.
+Downloads full-length videos from **TeraBox** (and its mirror domains) and **Diskwala**, then delivers them directly through Telegram. Resolved source/download URLs are catalogued in Firebase for `/random`; Telegram storage-group message caching is no longer used.
 
 ---
 
@@ -13,14 +13,14 @@ Downloads full-length videos from **TeraBox** (and its mirror domains) and **Dis
   - **Diskwala (`/dw`)** — Resolves Diskwala share links via a scraper proxy and downloads the direct video. *[New]*
 - **Expanded TeraBox domain support** (`/exp`, `/exphd`): `terabox.com`, `1024terabox.com`, `teraboxapp.com`, `freeterabox.com`, `terabox.app`, `terabox.fun`, `4funbox.co/.com`, `mirrobox.com`, `nephobox.com`, `1024tera.com`, `momerybox.com`, `tibibox.com` (with optional `www.`), in both `{base}/<something>/{SURL}` and `{base}/{SURL}` URL shapes.
 - **Smart mode hints**: Sending a Diskwala link while in a TeraBox mode (or a TeraBox link while in `dw` mode) replies with the correct command / mode to switch to, instead of silently ignoring it.
-- **`/random`**: Re-sends a random previously cached video.
+- **`/random`**: Selects a cached download URL, downloads it, and uploads it to the requesting user with live progress and transfer timings.
 - **`/settings`**: Switch the default auto-download mode (`get`, `exp`, `exphd`, `dw`).
 - **`/op <msg>`**: Send feedback to the admin.
 - **Admin Commands**:
   - **`/recent`**: Show recent users interacting with the bot.
   - **`/broadcast`**: Broadcast a message to all known users and groups.
 - **Cancel button**: Inline button to abort an in-progress download at the next checkpoint.
-- **Telegram-side caching**: Uploads each video once to a storage group and re-forwards on repeat requests. Firestore holds per-source cache buckets — `get`, `exp`, `exphd`, `dw`.
+- **URL catalogue**: Firestore stores `source_url` and `download_url`; Telegram message IDs and storage-group media are not used.
 - **Persistent DB via Firebase Firestore**: Tracks users, chat IDs, and each user's selected mode.
 - **Flood Control Queue**: Custom semaphore and async queue handling to survive `FloodWaitError` during viral moments.
 - **Quality fallback**: Tries 1080p -> 720p -> 480p -> 360p automatically (on the traditional pipeline).
@@ -95,9 +95,7 @@ flowchart TD
     FL -->|"no"| SEM["acquire semaphore (limit 20)"]
 
     SEM --> REG["register cancel_event in active_tasks<br/>render ❌ Cancel button"]
-    REG --> CACHE{"search_in_cache(key, mode)"}
-    CACHE -->|"hit"| FWD["re-forward cached video<br/>from storage group"] --> DONE["delete status message"]
-    CACHE -->|"miss"| META["fetch metadata (in worker thread)"]
+    REG --> META["fetch metadata (in worker thread)"]
 
     META -->|"exp / exphd"| M1["get_video_info()<br/>TeraBox scraper proxy"]
     META -->|"dw"| M2["get_diskwala_info()<br/>Diskwala scraper proxy"]
@@ -105,15 +103,168 @@ flowchart TD
     M1 --> DL["download_terabox_file_experimental()<br/>multipart / HLS+ffmpeg / direct"]
     M2 --> DL
 
-    DL --> PRE["_pre_upload_file()<br/>upload bytes once → InputFile handle"]
-    PRE --> ST{"STORAGE_GROUP_ID set?"}
-    ST -->|"yes"| UP["_upload_to_storage()<br/>+ add_to_cache(key, msg_id, mode)"]
-    ST -->|"no"| SEND
-    UP --> SEND["send_file to user<br/>(caption: name, size, timings)"]
+    DL --> DB["save source_url + download_url<br/>in Firestore"]
+    DB --> SEND["send_file directly to user<br/>(caption: name, size, timings)"]
     SEND --> CLEAN["delete local temp files"] --> DONE
 
     REG -.->|"user taps Cancel"| CX["cancel_event.set()<br/>→ abort at next checkpoint"]
 ```
+
+---
+
+## Firebase Media Cache Schema
+
+### Firebase free-tier limitations
+
+The cache design must account for operation quotas as well as storage:
+
+| Resource | Free allowance |
+|---|---:|
+| Stored data | 1 GiB |
+| Document reads | 50,000 per day |
+| Document writes | 20,000 per day |
+| Document deletes | 20,000 per day |
+| Maximum size of one document | 1 MiB (hard limit on every plan) |
+
+Daily quotas reset around midnight Pacific Time. When a quota is exhausted, Firebase-backed features such as `/random`, persistent `/settings`, user tracking, `/recent`, and `/broadcast` user lookup can temporarily fail. Explicit `/get`, `/exp`, `/exphd`, and `/dw` downloads remain operational because database failures are handled as non-fatal.
+
+### Logical media record
+
+The catalogue never stores Telegram message IDs. Each logical record contains:
+
+```json
+{
+  "hash_id": "h_<sha256(source_url)>",
+  "source_url": "https://source.example/item",
+  "download_url": "https://cdn.example/video.mp4"
+}
+```
+
+`hash_id` is internal and is never displayed to users. Modes must remain distinguishable because `/exp` and `/exphd` can resolve the same source to different download URLs.
+
+### Previous schema: one large document per mode
+
+```text
+cache/get
+cache/exp
+cache/exphd
+cache/dw
+```
+
+Each mode document held a map of `hash_id -> {source_url, download_url}`.
+
+**Benefits**
+
+- Very few billed writes for bulk imports.
+- One billed document read could load an entire mode.
+- Straightforward implementation.
+
+**Demerits**
+
+- The 1 MiB hard limit makes the full catalogue impossible to store. The 41,459 eligible Diskwala records alone serialize to approximately 10.87 MiB.
+- Every insertion updates the same hot document, causing write contention.
+- Looking up one item transfers the entire mode document.
+- Individual records are difficult to query, update, or delete.
+
+### Alternative schema: one document per media item
+
+```text
+cache/dw_h_<sha256>
+cache/exp_h_<sha256>
+cache/exphd_h_<sha256>
+cache/get_h_<sha256>
+```
+
+Each document contains `hash_id`, `mode`, `source_url`, `download_url`, and a stable `random_key` for `/random`.
+
+**Benefits**
+
+- No aggregate 1 MiB limit.
+- One small direct read per source lookup.
+- Independent concurrent writes without a hot document.
+- Efficient individual updates and deletes.
+- `/random` normally needs only one or two indexed reads.
+- Scales technically to very large catalogues.
+
+**Demerits**
+
+- Initial import requires one write per item. Importing 41,459 Diskwala records exceeds the 20,000 daily write allowance.
+- A full scan costs one read per record and nearly exhausts the 50,000 daily read allowance.
+- Bulk cleanup requires one delete per item.
+- Every document adds metadata and index-storage overhead.
+- Random range selection is efficient but only approximately uniform.
+
+### **Recommended approach: 256 sharded documents in `cache`**
+
+> **RECOMMENDED:** Use 256 deterministic shards per mode inside the existing `cache` collection. This is the best balance for Firestore's free tier.
+
+```text
+cache/dw_000       ... cache/dw_0ff
+cache/exp_000      ... cache/exp_0ff
+cache/exphd_000    ... cache/exphd_0ff
+cache/get_000      ... cache/get_0ff
+```
+
+Each shard stores a bounded map:
+
+```json
+{
+  "h_abc123...": {
+    "source_url": "https://www.diskwala.com/app/abc123",
+    "download_url": "https://cdn.example/video.mp4"
+  }
+}
+```
+
+The shard is deterministic:
+
+```python
+shard_number = int(hash_id[2:10], 16) % 256
+```
+
+**Benefits**
+
+- Keeps documents safely below 1 MiB for substantially more growth.
+- Importing 41,459 records requires at most 256 writes instead of 41,459.
+- A direct lookup reads exactly one known shard.
+- `/random` can read one shard and choose an entry in memory.
+- No additional top-level collection is required.
+- `get`, `exp`, `exphd`, and `dw` use the same structure.
+- Write contention is distributed across 256 documents.
+- A complete four-mode maintenance scan requires at most 1,024 reads rather than one read per media item.
+
+**Demerits**
+
+- One shard read transfers multiple entries instead of one item.
+- Individual deletion requires a nested-field update.
+- Random shard selection can slightly favor entries in smaller shards; weighted shard selection removes this bias.
+- Extreme future growth can eventually push shards toward 1 MiB and require more shards.
+- Concurrent writes can still contend when they target the same shard, though 256-way distribution makes this unlikely.
+
+### Comparison
+
+| Property | One mode document | One media document | **256 shards (recommended)** |
+|---|---:|---:|---:|
+| Writes for 41,459-record import | Impossible payload | 41,459 | Up to 256 |
+| Direct lookup | 1 huge read | 1 small read | 1 medium read |
+| Typical `/random` reads | 1–4 | 1–2 | 1 |
+| Safe from 1 MiB limit | No | Yes | Yes |
+| Free-tier friendly | No | Poor for migration | **Yes** |
+| Concurrent writes | Poor | Excellent | Good |
+| Individual management | Poor | Excellent | Moderate |
+| Full catalogue scan | Few reads, impossible size | Tens of thousands | Hundreds |
+
+### Shared limitation: expiring download URLs
+
+All schemas store CDN URLs that may expire. `/random` must handle failed downloads gracefully, and stale records should eventually be refreshed from `source_url` or removed.
+
+### Migration safety
+
+- Do not delete an old schema until all target records are written and verified.
+- Migration scripts must be resumable and idempotent.
+- Reads, writes, and deletes have separate daily quotas.
+- Large per-media migrations require multiple reset windows or temporary Blaze billing.
+- Prefer the recommended sharded schema to keep bulk migration and maintenance within free-tier quotas.
 
 ---
 
@@ -127,7 +278,7 @@ requirements.txt               # Python package dependencies
 apt.txt                        # OS-level dependencies (ffmpeg, etc.)
 
 telegram_logic/
-  bot.py                       # Telethon client + shared upload/cache/cancel helpers
+  bot.py                       # Telethon client + flood-safe send/cancel helpers
   helpers.py                   # URL matchers (TeraBox legacy + experimental, Diskwala), size/duration formatting
   progress_callbacks.py        # Live progress-message editing during download & upload
   queue.py                     # Semaphore + flood-wait queue
@@ -162,7 +313,7 @@ diskwalaDL/                    # Diskwala (/dw) extractor
 firebase_db/                   # Firebase Firestore persistence
   db.py                        # Firestore client initialisation
   users.py                     # User tracking + per-user mode (get/exp/exphd/dw)
-  cache.py                     # surl -> message_id cache buckets (get/exp/exphd/dw)
+  cache.py                     # Firestore source/download URL catalogue
 ```
 
 ---
@@ -190,7 +341,6 @@ Create a `.env` file in the project root:
 BOT_TOKEN=your_telegram_bot_token
 APP_ID=your_telegram_app_id
 API_HASH=your_telegram_api_hash
-STORAGE_GROUP_ID=-1001234567890         # numeric ID of a private storage supergroup
 ADMIN_ID=12345678                       # your user ID to access /broadcast and /recent
 
 # Firebase Firestore (service-account JSON as a single-line string)
@@ -211,7 +361,6 @@ COOKIES2=...
 
 - `BOT_TOKEN` — from [@BotFather](https://t.me/BotFather)
 - `APP_ID` / `API_HASH` — from [my.telegram.org](https://my.telegram.org)
-- `STORAGE_GROUP_ID` — must be a supergroup ID (starts with `-100`). The bot must be admin.
 - `FIREBASE_SECRETS` — the Firestore service-account JSON, collapsed to one line; persists users, modes, and the video cache.
 - `THIRD_PARTY_TERABOXDL_URL` / `PROXY_URL` — endpoints the experimental (`/exp`, `/exphd`) pipeline uses to resolve TeraBox links.
 - `DISKWALA_PROXY_URL` / `DISKWALA_API_KEY` — the Diskwala (`/dw`) proxy endpoint and its `x-api-key`.
@@ -337,8 +486,8 @@ Suppose your bot goes viral in a large group, and 50 users all send a TeraBox li
 
 1. **Working Normally (Semaphore):** 
    - The bot receives 50 links almost simultaneously.
-   - The Semaphore (`asyncio.Semaphore(20)`) immediately grabs the first 20 links and starts checking their cache/downloading them. The other 30 are waiting patiently in memory.
-   - The 20 active pipelines all send a message back: `🔍 Checking cache for...`. They also start updating their `status.edit(...)` texts (`0%`, `10%`, etc.).
+   - The Semaphore (`asyncio.Semaphore(20)`) immediately grabs the first 20 links and starts resolving/downloading them. The other 30 wait in memory.
+   - The 20 active pipelines fetch metadata and update their `status.edit(...)` progress texts (`0%`, `10%`, etc.).
 
 2. **The Breaking Point (`FloodWaitError` happens):**
    - Because 20 active jobs are constantly editing their status messages ("Uploading 10%", "Uploading 20%"), Telegram says: *"Whoa, you are sending too many API requests per second!"*
@@ -362,23 +511,6 @@ Suppose your bot goes viral in a large group, and 50 users all send a TeraBox li
 6. **The Background Worker Drains the Queue:**
    - The background task [_queue_worker()] wakes up and checks the `_flood_queue`.
    - It sees User #51's link sitting there.
-   - It pulls it out, waits another 2 seconds (just to be gentle on Telegram's API so we don't instantly get blocked again), and then pushes it through the normal pipeline (`Checking cache... → Downloading... → Delivery`).
+   - It pulls it out, waits another 2 seconds (just to be gentle on Telegram's API so we don't instantly get blocked again), and then pushes it through the normal pipeline (`Fetching metadata... → Downloading... → Delivery`).
    - The user gets their video automatically without having had to type `/retry` or paste the URL a second time.
-
-
-  ---
-
-  BEFORE:
-  Phase 4: bot.send_file(filepath) → reads disk + uploads bytes to Telegram
-  Phase 5 fallback: bot.send_file(filepath) → reads disk AGAIN + uploads bytes AGAIN
-
-  AFTER:
-  Phase 4: _pre_upload_file(filepath) → reads disk once → InputFile handle
-           _upload_to_storage(handle) → sends handle (no disk read)
-  Phase 5 fallback: bot.send_file(handle) → reuses handle (no disk read, no re-upload)
-
-
-  ---
-
-  
-  
+---
