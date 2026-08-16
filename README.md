@@ -20,6 +20,7 @@ Downloads full-length videos from **TeraBox** (and its mirror domains) and **Dis
   - **`/recent`**: Show recent users interacting with the bot.
   - **`/broadcast`**: Broadcast a message to all known users and groups.
 - **Cancel button**: Inline button to abort an in-progress download at the next checkpoint.
+- **Video thumbnails**: Uses provider thumbnails when available and a random FFmpeg frame as fallback, with at most five preview jobs running concurrently.
 - **URL catalogue**: Firestore stores `source_url` and `download_url`; Telegram message IDs and storage-group media are not used.
 - **Persistent DB via Firebase Firestore**: Tracks users, chat IDs, and each user's selected mode.
 - **Flood Control Queue**: Custom semaphore and async queue handling to survive `FloodWaitError` during viral moments.
@@ -257,6 +258,78 @@ shard_number = int(hash_id[2:10], 16) % 256
 ### Shared limitation: expiring download URLs
 
 All schemas store CDN URLs that may expire. `/random` must handle failed downloads gracefully, and stale records should eventually be refreshed from `source_url` or removed.
+
+### Telegram video thumbnails
+
+Every upload pipeline (`/get`, `/exp`, `/exphd`, `/dw`, and `/random`) prepares a Telegram-compatible JPEG preview:
+
+- TeraBox uses `list[0].thumbs.url1` (then `url2`/`icon`) when provided by the proxy.
+- Diskwala uses `fileInfo.thumb` when provided by the proxy.
+- Provider images are resized to at most 320×320 and recompressed below 20 KB.
+- Missing or invalid provider images fall back to a random frame between 10% and 90% of the completed local video.
+- The `.jpg` is passed through Telethon's `thumb=` argument with explicit `DocumentAttributeVideo` duration and dimensions.
+- A dedicated `asyncio.Semaphore(5)` limits FFmpeg/ffprobe work to five concurrent jobs. Additional previews wait in a rolling queue while download/upload concurrency remains separately bounded.
+- Preview failures are non-fatal: the video is uploaded without a custom thumbnail.
+- Every preview uses an isolated temporary directory and is deleted after the Telegram upload completes.
+
+### Runtime memory and JSON cache
+
+The bot does not query Firestore for every command. It maintains a complete runtime cache in memory and persists an atomic local snapshot to `runtime_cache.json`.
+
+Startup behavior:
+
+1. Load `runtime_cache.json` when available.
+2. Read the small Firestore `_meta` document.
+3. Batch-fetch only shards whose versions changed since the JSON snapshot.
+4. On the first startup without a snapshot, batch-read all non-empty shards once.
+5. Persist the refreshed snapshot using a temporary file followed by an atomic rename.
+
+Telegram connects before this work begins. Initial Firestore loading runs in a daemon background thread in batches of 20 shards with bounded request timeouts. Every completed batch is merged into the live cache immediately, so `/random` becomes usable after the first batch rather than waiting for all shards. `/random` waits briefly when invoked before that first batch arrives.
+
+`/exp`, `/exphd`, and `/dw` remain usable throughout loading. They use already-loaded shards when available and otherwise resolve through their provider normally. Cache writes update live memory immediately and are merged safely with incoming startup batches; a startup read cannot overwrite a newer command write. Ctrl+C does not wait for the background Firebase thread, and shutdown performs no Firebase network operation.
+
+Set `CACHE_SNAPSHOT_PATH` to a persistent mounted path when the bot runs in an ephemeral container. Otherwise, each new deployment may require another complete initial shard read.
+
+```env
+CACHE_SNAPSHOT_PATH=/persistent-data/runtime_cache.json
+```
+
+The in-memory cache is intentionally complete rather than an LRU cache. The current catalogue is small enough to fit comfortably in memory, and retaining every record makes `/random` and source lookups constant-time without database access.
+
+#### Runtime operation costs
+
+| Operation | Firestore reads | Firestore writes |
+|---|---:|---:|
+| `/random` | 0 | 0 |
+| Cached `/exp`, `/exphd`, or `/dw` | 0 | 0 |
+| New or refreshed URL | 0 | 1 shard write |
+| Five-minute synchronization | 1 metadata read | Up to 1 batched metadata write when local shards changed |
+| Changed shard from another worker | 1 read per changed shard | 0 |
+| First startup without JSON | Approximately one read per non-empty shard plus `_meta` | 0 |
+| Later startup with JSON | 1 metadata read plus changed shards | 0 |
+
+At a five-minute interval, an idle bot performs only **288 small metadata reads per day**, well below the 50,000-read free-tier allowance. Metadata version updates for multiple media additions are combined into one write per interval instead of one metadata write per item.
+
+#### Command behavior
+
+- `/random` selects directly from memory and performs no Firebase or provider-proxy lookup.
+- `/exp`, `/exphd`, and `/dw` check memory before calling their provider proxy.
+- A valid cache hit downloads immediately and does not write to Firestore again.
+- If a cached signed URL has expired, the command calls its provider proxy once, retries the download, and refreshes Firestore and memory.
+- New cache entries update local memory immediately; other bot workers receive them through the versioned five-minute refresh.
+- Cached records can include `filename` and `file_size`, avoiding filename probes and allowing `/random` to display the actual media name.
+
+#### Synchronization and collision safety
+
+Each shard has a version recorded in `cache/_meta`. Local shard-version changes are accumulated and published in one metadata write during the refresh interval. Refreshes compare versions and batch-read only newer shards.
+
+To handle races during the five-minute synchronization gap:
+
+- Local writes update memory before waiting for the next refresh.
+- A refresh never replaces a shard when a newer local version appeared after metadata polling.
+- Repeated writes for the same source update the existing cache entry rather than creating duplicates.
+- If two different source URLs ever produce the same SHA-256 key, deterministic collision suffixes allocate separate keys instead of overwriting either record.
+- The JSON snapshot is ignored by Git through `.gitignore` because it contains runtime CDN URLs.
 
 ### Migration safety
 

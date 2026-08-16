@@ -9,3 +9,5 @@ terabox_bot.session-journal
 firebase_secrets.json
 fb_secrets.json
 db_scripts
+runtime_cache.json
+runtime_cache.json.tmp

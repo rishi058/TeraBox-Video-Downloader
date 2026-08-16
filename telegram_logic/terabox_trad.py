@@ -9,6 +9,7 @@ from telethon.errors import FloodWaitError
 from .bot import bot, _cancellable, terabox_queue, _safe_send, active_tasks
 from .helpers import format_size, format_duration
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
+from .thumbnails import prepare_video_preview
 
 from terabox.public_api import prepare_terabox_link, download_terabox_file, TeraBoxError, CancelledError
 
@@ -139,6 +140,12 @@ async def helper(event, surl: str) -> None:
 
     # Use actual file size (compressed TS/MP4) instead of original API size
     size_str = format_size(os.path.getsize(filepath))
+    await _safe_send(status.edit, f"📦 **{filename}**\n\n🖼 Preparing video preview…")
+    try:
+        preview = await prepare_video_preview(filepath)
+    except Exception as exc:
+        log.warning("Preview generation failed for %s: %s", surl, exc)
+        preview = None
 
     # Upload directly to the user. Traditional /get has no reusable direct URL,
     # so it is not added to the random URL catalogue.
@@ -163,6 +170,8 @@ async def helper(event, surl: str) -> None:
             _safe_send(
                 bot.send_file, chat_id, filepath,
                 caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
+                thumb=preview.thumbnail_path if preview else None,
+                attributes=preview.attributes(filename) if preview else None,
                 supports_streaming=True, reply_to=event.message.id,
                 progress_callback=progress_cb,
             ), cancel_event,
@@ -185,6 +194,9 @@ async def helper(event, surl: str) -> None:
         await _safe_send(status.edit, f"❌ Upload failed: {e}\n\nYou can try different *mode* to download.\nSwitch *mode* from /settings")
         active_tasks.pop(task_key, None)
         return
+    finally:
+        if preview:
+            preview.cleanup()
 
     for f_path in (filepath, os.path.splitext(filepath)[0] + ".ts"):
         if os.path.exists(f_path):

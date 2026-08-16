@@ -3,6 +3,7 @@ import time
 import threading
 import asyncio
 import logging
+from urllib.parse import unquote, urlparse
 from telethon import Button
 from telethon.errors import FloodWaitError
 
@@ -10,8 +11,9 @@ from .bot import (
     bot, _cancellable, terabox_queue, _safe_send, active_tasks,
 )
 from .helpers import format_size, format_duration
-from firebase_db.cache import add_to_cache
+from firebase_db.cache import add_to_cache, search_in_cache
 from .progress_callbacks import make_download_progress_cb, make_upload_progress_cb
+from .thumbnails import prepare_video_preview
 
 from terabox.public_api import TeraBoxError, CancelledError
 from teraboxDL.public_api import download_terabox_file_experimental
@@ -63,6 +65,11 @@ async def _dw_helper(event, diskwala_url: str) -> None:
     """Inner pipeline, runs under the concurrency semaphore."""
     chat_id = event.chat_id
     link_id = extract_diskwala_id(diskwala_url) or diskwala_url
+    cache_source_url = (
+        f"https://www.diskwala.com/app/{link_id}"
+        if extract_diskwala_id(diskwala_url)
+        else diskwala_url
+    )
     user_mode = DW_MODE
     task_key = (chat_id, link_id)
     total_start = time.time()
@@ -82,56 +89,95 @@ async def _dw_helper(event, diskwala_url: str) -> None:
                 except Exception as e:
                     log.warning(f"Could not clean up {p}: {e}")
 
-    status = await _safe_send(event.respond, "⏳ Fetching metadata…", buttons=cancel_btn)
+    status = await _safe_send(event.respond, "🔍 Checking local cache…", buttons=cancel_btn)
+    cached = search_in_cache(cache_source_url, user_mode)
+    using_cached_url = cached is not None
+    should_update_cache = not using_cached_url
 
-    #! GET FILE INFO
-    try:
-        info = await asyncio.to_thread(get_diskwala_info, diskwala_url)
-    except DiskwalaError as e:
-        log.error(f"Diskwala metadata fetch failed for {link_id}: {e}")
-        await _safe_send(status.edit, f"❌ Failed to get video info: {e}")
-        active_tasks.pop(task_key, None)
-        return
-    except Exception as e:
-        log.exception(f"Unexpected Diskwala metadata error for {link_id}")
-        await _safe_send(status.edit, f"❌ Failed to get video info: {e}")
-        active_tasks.pop(task_key, None)
-        return
+    def _fallback_filename(url: str) -> str:
+        name = unquote(os.path.basename(urlparse(url).path)).strip()
+        if "#" in name:
+            name = name.rsplit("#", 1)[-1]
+        return name if name and "." in name else "cached_video.mp4"
 
-    download_url = info["download_url"]
-    filename = info["filename"]
-    size_str = format_size(info["size"])
+    if cached:
+        download_url = cached["download_url"]
+        filename = cached.get("filename") or _fallback_filename(download_url)
+        file_size = int(cached.get("file_size") or 0)
+        thumbnail_url = cached.get("thumbnail_url")
+    else:
+        await _safe_send(status.edit, "⏳ Fetching metadata…", buttons=cancel_btn)
+        try:
+            info = await asyncio.to_thread(get_diskwala_info, diskwala_url)
+        except Exception as e:
+            log.error(f"Diskwala metadata fetch failed for {link_id}: {e}")
+            await _safe_send(status.edit, f"❌ Failed to get video info: {e}")
+            active_tasks.pop(task_key, None)
+            return
+        download_url = info["download_url"]
+        filename = info["filename"]
+        file_size = int(info.get("size") or 0)
+        thumbnail_url = info.get("thumbnail_url")
 
-    await _safe_send(
-        status.edit,
-        f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n⬇️ Downloading… **0%**",
-        buttons=cancel_btn,
-    )
-
-    # — Phase 3: Download ——————————————————————————————————————————————————
+    size_str = format_size(file_size) if file_size else "Unknown"
     loop = asyncio.get_running_loop()
     dl_start = time.time()
-    dl_progress_cb = make_download_progress_cb(status, filename, size_str, loop, cancel_btn)
-    try:
-        filepath = await asyncio.to_thread(
-            download_terabox_file_experimental, download_url, filename, cancel_event, dl_progress_cb
+
+    async def _download_current_url():
+        await _safe_send(
+            status.edit,
+            f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n⬇️ Downloading… **0%**",
+            buttons=cancel_btn,
         )
+        callback = make_download_progress_cb(status, filename, size_str, loop, cancel_btn)
+        return await asyncio.to_thread(
+            download_terabox_file_experimental,
+            download_url,
+            filename,
+            cancel_event,
+            callback,
+        )
+
+    try:
+        filepath = await _download_current_url()
     except CancelledError:
         await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
-    except TeraBoxError as e:
-        log.error(f"Download error for {link_id}: {e}")
-        await _safe_send(status.edit, f"❌ Download failed: {e}")
-        active_tasks.pop(task_key, None)
-        return
-    except Exception as e:
-        log.exception(f"Unexpected download error for {link_id}")
-        await _safe_send(status.edit, f"❌ Download failed: {e}")
-        active_tasks.pop(task_key, None)
-        return
+    except Exception as first_error:
+        if not using_cached_url:
+            log.error("Download error for %s: %s", link_id, first_error)
+            await _safe_send(status.edit, f"❌ Download failed: {first_error}")
+            active_tasks.pop(task_key, None)
+            return
+
+        log.info("Cached URL failed for %s; refreshing provider metadata", link_id)
+        await _safe_send(status.edit, "♻️ Cached link expired. Refreshing metadata…", buttons=cancel_btn)
+        try:
+            info = await asyncio.to_thread(get_diskwala_info, diskwala_url)
+            download_url = info["download_url"]
+            filename = info["filename"]
+            file_size = int(info.get("size") or 0)
+            thumbnail_url = info.get("thumbnail_url")
+            size_str = format_size(file_size) if file_size else "Unknown"
+            should_update_cache = True
+            filepath = await _download_current_url()
+        except CancelledError:
+            await _safe_send(status.edit, "🚫 Cancelled.")
+            active_tasks.pop(task_key, None)
+            return
+        except Exception as retry_error:
+            log.error("Refreshed download failed for %s: %s", link_id, retry_error)
+            await _safe_send(status.edit, f"❌ Download failed: {retry_error}")
+            active_tasks.pop(task_key, None)
+            return
+
     dl_time = time.time() - dl_start
-    await asyncio.to_thread(add_to_cache, diskwala_url, download_url, user_mode)
+    if should_update_cache:
+        await asyncio.to_thread(
+            add_to_cache, cache_source_url, download_url, user_mode, filename,
+            os.path.getsize(filepath), thumbnail_url,
+        )
 
     if cancel_event.is_set():
         _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
@@ -141,6 +187,12 @@ async def _dw_helper(event, diskwala_url: str) -> None:
 
     # Use actual file size on disk instead of the API-reported size
     size_str = format_size(os.path.getsize(filepath))
+    await _safe_send(status.edit, f"📦 **{filename}**\n\n🖼 Preparing video preview…")
+    try:
+        preview = await prepare_video_preview(filepath, thumbnail_url)
+    except Exception as exc:
+        log.warning("Preview generation failed for %s: %s", link_id, exc)
+        preview = None
 
     # Upload directly to the requesting user; no Telegram storage-group copy.
     def _build_caption(dl_t: float, up_t: float, total_t: float) -> str:
@@ -164,6 +216,8 @@ async def _dw_helper(event, diskwala_url: str) -> None:
             _safe_send(
                 bot.send_file, chat_id, filepath,
                 caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
+                thumb=preview.thumbnail_path if preview else None,
+                attributes=preview.attributes(filename) if preview else None,
                 supports_streaming=True, reply_to=event.message.id,
                 progress_callback=progress_cb,
             ), cancel_event,
@@ -186,6 +240,9 @@ async def _dw_helper(event, diskwala_url: str) -> None:
         await _safe_send(status.edit, f"❌ Upload failed: {e}")
         active_tasks.pop(task_key, None)
         return
+    finally:
+        if preview:
+            preview.cleanup()
 
     for f_path in (filepath, os.path.splitext(filepath)[0] + ".ts"):
         if os.path.exists(f_path):

@@ -12,15 +12,14 @@ import requests
 from telethon import events
 from telethon.tl.types import DocumentAttributeFilename
 
-from diskwalaDL.public_api import get_diskwala_info
-from firebase_db.cache import get_random_cache_record
+from firebase_db.cache import get_random_cache_record, get_runtime_cache_stats
 from terabox.internal_helpers import _safe_filename
 from terabox.public_api import CancelledError, TeraBoxError
 from teraboxDL.public_api import download_terabox_file_experimental
-from teraboxDL.terabox_dl import get_video_info
 from ..bot import _cancellable, _safe_send, bot, terabox_queue
 from ..helpers import format_duration, format_size
 from ..progress_callbacks import make_download_progress_cb, make_upload_progress_cb
+from ..thumbnails import prepare_video_preview
 
 log = logging.getLogger(__name__)
 
@@ -66,35 +65,16 @@ def _filename_from_url(download_url: str) -> str:
 
 
 def _resolve_media_info(record: dict) -> dict:
-    """Refresh metadata from the original provider, matching /exp and /dw."""
-    source_url = record["source_url"]
+    """Resolve display data from local cache only; performs no DB/proxy call."""
     cached_url = record["download_url"]
-    mode = record.get("_mode")
-    try:
-        if mode in ("exp", "exphd"):
-            info = get_video_info(source_url, is_hd=(mode == "exphd"))
-        elif mode == "dw":
-            info = get_diskwala_info(source_url)
-        else:
-            info = None
-
-        if info and info.get("download_url"):
-            filename = str(info.get("filename") or "").strip()
-            if not filename or filename == "unknown":
-                filename = _filename_from_url(info["download_url"])
-            return {
-                "filename": filename,
-                "download_url": info["download_url"],
-                "size": int(info.get("size") or 0),
-            }
-    except Exception as exc:
-        # Stored links may still be valid even when a metadata proxy is down.
-        log.warning("Could not refresh random metadata for mode=%s: %s", mode, exc)
-
+    filename = str(record.get("filename") or "").strip()
+    if not filename or filename == "unknown":
+        filename = _filename_from_url(cached_url)
     return {
-        "filename": _filename_from_url(cached_url),
+        "filename": filename,
         "download_url": cached_url,
-        "size": 0,
+        "size": int(record.get("file_size") or 0),
+        "thumbnail_url": record.get("thumbnail_url"),
     }
 
 
@@ -110,6 +90,7 @@ async def cmd_random(event):
 
 
 async def _deliver_random(event):
+    waiting_status = None
     try:
         record = await asyncio.to_thread(get_random_cache_record)
     except Exception as exc:
@@ -117,15 +98,33 @@ async def _deliver_random(event):
         await event.respond("⚠️ **Database error.** Please try again in a moment.")
         raise events.StopPropagation
 
+    if not record and get_runtime_cache_stats()["loading"]:
+        waiting_status = await event.respond("⏳ Media cache is warming up…")
+        # The first 20-shard batch normally arrives within a few seconds.
+        for _ in range(10):
+            await asyncio.sleep(0.5)
+            record = get_random_cache_record()
+            if record:
+                break
+
     if not record:
-        await event.respond("📭 No videos yet. Send a supported link first!")
+        message = "⏳ Media cache is still loading. Please run /random again shortly."
+        if waiting_status:
+            await _safe_send(waiting_status.edit, message)
+        else:
+            await event.respond("📭 No videos yet. Send a supported link first!")
         raise events.StopPropagation
 
-    status = await _safe_send(event.respond, "⏳ Fetching video information…")
+    if waiting_status:
+        status = waiting_status
+        await _safe_send(status.edit, "⏳ Fetching video information…")
+    else:
+        status = await _safe_send(event.respond, "⏳ Fetching video information…")
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
     total_start = time.time()
     work_dir = None
+    preview = None
 
     try:
         info = await asyncio.to_thread(_resolve_media_info, record)
@@ -162,6 +161,12 @@ async def _deliver_random(event):
             raise TeraBoxError("Downloaded file is empty")
         size_str = format_size(file_size)
 
+        await _safe_send(status.edit, f"📦 **{filename}**\n\n🖼 Preparing video preview…")
+        try:
+            preview = await prepare_video_preview(filepath, info.get("thumbnail_url"))
+        except Exception as exc:
+            log.warning("Random preview generation failed: %s", exc)
+
         await _safe_send(
             status.edit,
             f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
@@ -177,7 +182,11 @@ async def _deliver_random(event):
                         event.chat_id,
                         filepath,
                         caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
-                        attributes=[DocumentAttributeFilename(filename)],
+                        thumb=preview.thumbnail_path if preview else None,
+                        attributes=(
+                            preview.attributes(filename)
+                            if preview else [DocumentAttributeFilename(filename)]
+                        ),
                         supports_streaming=True,
                         reply_to=event.message.id,
                         progress_callback=up_cb,
@@ -232,5 +241,7 @@ async def _deliver_random(event):
         log.exception("Random video delivery failed")
         await _safe_send(status.edit, "❌ Could not deliver this random video. Try again!")
     finally:
+        if preview:
+            preview.cleanup()
         if work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)

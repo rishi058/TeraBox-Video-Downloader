@@ -81,7 +81,7 @@ def get_diskwala_info(diskwala_url: str) -> dict:
     """
     Resolve a Diskwala share URL to downloadable video info.
 
-    Returns {"filename": str, "size": int, "download_url": str}.
+    Returns filename, size, download URL and provider thumbnail URL.
     Raises DiskwalaError on any failure.
     """
     if not DISKWALA_PROXY_URL:
@@ -119,4 +119,5 @@ def get_diskwala_info(diskwala_url: str) -> dict:
         "filename": file_info.get("name") or "diskwala_video.mp4",
         "size": int(file_info.get("size") or 0),
         "download_url": download_url,
+        "thumbnail_url": file_info.get("thumb"),
     }

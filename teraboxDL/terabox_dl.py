@@ -74,12 +74,18 @@ def get_video_info(terabox_url: str, is_hd: bool) -> dict:
         raise Exception("Video list not found or empty in metadata response")
 
     file_info = data["list"][0]
+    thumbs = file_info.get("thumbs") or {}
+    if not isinstance(thumbs, dict):
+        thumbs = {}
+    thumbnail_url = thumbs.get("url1") or thumbs.get("url2") or thumbs.get("icon")
 
     if is_hd:
         return {
             "filename": file_info.get("server_filename", "unknown"),
             "size": int(file_info.get("size", 0)),
             "download_url": file_info.get("direct_link", ""),
+            "thumbnail_url": thumbnail_url,
+            "duration": int(file_info.get("duration") or 0),
         }
     else:
         download_url = file_info.get("stream_url", "")
@@ -89,6 +95,8 @@ def get_video_info(terabox_url: str, is_hd: bool) -> dict:
             "filename": file_info.get("server_filename", "unknown"),
             "size": new_file_size,
             "download_url": download_url,
+            "thumbnail_url": thumbnail_url,
+            "duration": int(file_info.get("duration") or 0),
         }
     
 # if __name__ == "__main__":

@@ -21,6 +21,11 @@ from telegram_logic.diskwala import process_diskwala
 from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url_exp
 from diskwalaDL.public_api import extract_all_diskwala_urls
 from firebase_db.users import track_user, get_user_mode
+from firebase_db.cache import (
+    initialize_runtime_cache_async,
+    runtime_cache_refresh_loop,
+    shutdown_runtime_cache,
+)
 
 # — Global User Tracker ——————————————————————————————————————————————————————————————————
 
@@ -184,7 +189,24 @@ async def run_bot() -> None:
     log.info("Bot commands registered.")
     log.info("Bot started! Waiting for messages...")
 
-    await bot.run_until_disconnected()
+    async def cache_lifecycle():
+        cache_ready = await initialize_runtime_cache_async()
+        if not cache_ready:
+            log.warning("Runtime media cache is empty; /random and cache hits are unavailable.")
+        else:
+            log.info("Runtime media cache is ready.")
+        await runtime_cache_refresh_loop()
+
+    cache_task = asyncio.create_task(cache_lifecycle())
+    try:
+        await bot.run_until_disconnected()
+    finally:
+        cache_task.cancel()
+        try:
+            await cache_task
+        except asyncio.CancelledError:
+            pass
+        shutdown_runtime_cache()
 
 
 # — FastAPI app ———————————————————————————————————————————————————————————————————————————————
