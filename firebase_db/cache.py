@@ -158,7 +158,11 @@ def get_random_cache_record() -> dict | None:
                 and record.get("download_url")
             ]
             if records:
-                return random.choice(records)
+                record = dict(random.choice(records))
+                # Runtime-only context used to refresh metadata for /random.
+                # It is not persisted or displayed to users.
+                record["_mode"] = mode
+                return record
         except Exception as exc:
             log.error("[DB] random shard read failed: %s", exc)
             return None

@@ -54,6 +54,7 @@ def download_terabox_file_experimental(
     filename: str,
     cancel_event: threading.Event | None = None,
     progress_callback=None,
+    output_path: str | None = None,
 ) -> str:
     """
     Download the video described by download_url and filename.
@@ -63,8 +64,12 @@ def download_terabox_file_experimental(
     """
     
     safe = _safe_filename(filename)
-    os.makedirs(STORAGE_DIR, exist_ok=True)
-    mp4_path = os.path.join(STORAGE_DIR, safe if safe.lower().endswith(".mp4") else safe + ".mp4")
+    if output_path:
+        mp4_path = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(mp4_path), exist_ok=True)
+    else:
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+        mp4_path = os.path.join(STORAGE_DIR, safe if safe.lower().endswith(".mp4") else safe + ".mp4")
    
     try:
         if is_streaming_manifest(download_url):
