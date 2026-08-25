@@ -186,28 +186,47 @@ def _fix_private_key(creds: dict) -> None:
 
 
 def _resolve_firestore_database_id() -> str | None:
-    """Normalize optional FIRESTORE_DATABASE_ID style overrides.
+    """Normalize and sanitize optional Firestore database-id overrides.
 
-    If unset, or set to default aliases (including URL-encoded), return None so
-    Firebase Admin uses its built-in default database routing.
+    Some platforms inject URL-encoded default ids like %28default%29, which get
+    double-encoded by the SDK and fail with "Invalid database id %28default%29".
     """
-    raw = (
-        os.getenv("FIRESTORE_DATABASE_ID")
-        or os.getenv("GOOGLE_CLOUD_FIRESTORE_DATABASE_ID")
-        or ""
-    ).strip()
-    if not raw:
+    env_keys = [
+        "FIRESTORE_DATABASE_ID",
+        "GOOGLE_CLOUD_FIRESTORE_DATABASE_ID",
+        "FIRESTORE_DATABASE",
+        "GOOGLE_FIRESTORE_DATABASE",
+    ]
+
+    chosen_key = None
+    chosen_raw = ""
+    for key in env_keys:
+        value = os.getenv(key)
+        if value and value.strip():
+            chosen_key = key
+            chosen_raw = value.strip()
+            break
+
+    if not chosen_raw:
         return None
 
-    decoded = unquote(raw)
-    normalized = decoded.strip().strip('"').strip("'")
-    if normalized in {"(default)", "default", "%28default%29"}:
+    normalized = unquote(chosen_raw).strip().strip('"').strip("'")
+    if normalized in {"", "(default)", "default"}:
+        for key in env_keys:
+            if key in os.environ:
+                os.environ.pop(key, None)
         log.warning(
-            "Ignoring FIRESTORE database override=%r; using SDK default database.",
-            raw,
+            "Ignoring default/encoded Firestore DB override from %s=%r; using SDK default database.",
+            chosen_key,
+            chosen_raw,
         )
         return None
 
+    # Keep aliases in sync so downstream libraries do not pick stale values.
+    for key in env_keys:
+        os.environ[key] = normalized
+
+    log.info("Using Firestore database override from %s=%r", chosen_key, normalized)
     return normalized
 
 
