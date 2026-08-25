@@ -30,16 +30,17 @@ DW_MODE = "dw"
 #! ONLY PUBLIC API
 async def process_diskwala(event, diskwala_url: str) -> None:
     # If currently in flood cooldown → queue immediately
-    rem = terabox_queue.flood_remaining()
+    rem = terabox_queue.flood_remaining(event.chat_id)
     if rem > 0:
         await terabox_queue.put(_dw_helper, event, diskwala_url)
         try:
             await event.respond(
                 "⏳ Bot overloaded! Your request has been queued "
-                f"and will be processed automatically in ~{rem}s."
+                f"and will be processed automatically in ~{rem}s. Kindly wait and don't "
+                "message again; each new message can increase your wait time."
             )
         except FloodWaitError as e:
-            terabox_queue.update_flood_until(e.seconds)
+            terabox_queue.update_flood_until(e.seconds, event.chat_id)
         except Exception:
             pass
         return
@@ -50,12 +51,13 @@ async def process_diskwala(event, diskwala_url: str) -> None:
             await _dw_helper(event, diskwala_url)
         except FloodWaitError as e:
             # Pipeline hit flood → set cooldown, queue, notify user
-            terabox_queue.update_flood_until(e.seconds)
+            terabox_queue.update_flood_until(e.seconds, event.chat_id)
             await terabox_queue.put(_dw_helper, event, diskwala_url)
             try:
                 await event.respond(
                     f"⏳ Bot overloaded! Your request has been queued "
-                    f"and will be processed automatically in ~{e.seconds}s."
+                    f"and will be processed automatically in ~{e.seconds}s. Kindly wait and don't "
+                    "message again; each new message can increase your wait time."
                 )
             except Exception:
                 pass
@@ -129,7 +131,9 @@ async def _dw_helper(event, diskwala_url: str) -> None:
             f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n⬇️ Downloading… **0%**",
             buttons=cancel_btn,
         )
-        callback = make_download_progress_cb(status, filename, size_str, loop, cancel_btn)
+        callback = make_download_progress_cb(
+            status, filename, size_str, loop, cancel_btn, safe_send=_safe_send, chat_id=chat_id
+        )
         return await asyncio.to_thread(
             download_terabox_file_experimental,
             download_url,
@@ -209,7 +213,9 @@ async def _dw_helper(event, diskwala_url: str) -> None:
         f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
         buttons=cancel_btn,
     )
-    progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn)
+    progress_cb = make_upload_progress_cb(
+        status, filename, size_str, loop, cancel_btn, safe_send=_safe_send, chat_id=chat_id
+    )
     up_start = time.time()
     try:
         sent_video = await _cancellable(

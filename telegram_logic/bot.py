@@ -16,10 +16,51 @@ from .queue import MessageQueue
 # We still need a semaphore because:
 # 1. Unbounded concurrency (e.g. 50 links) will instantly trigger FloodWait before any work gets done.
 # 2. Downloading/Uploading 50 videos concurrently will crash a low-spec VPS (OOM or CPU exhaustion).
-# 10 is a good high-capacity limit that balances speed with server stability.
-terabox_queue = MessageQueue(concurrency_limit=20)
+# Keep this high enough to saturate the VPS, but low enough to avoid OOM/disk thrash.
+terabox_queue = MessageQueue(concurrency_limit=int(os.environ.get("TELEGRAM_CONCURRENCY_LIMIT", "20")))
+
+def _infer_chat_id(coro_func, args):
+    owner = getattr(coro_func, "__self__", None)
+    for attr in ("chat_id",):
+        chat_id = getattr(owner, attr, None)
+        if chat_id is not None:
+            return chat_id
+    name = getattr(coro_func, "__name__", "")
+    if name in {"send_file", "send_message"} and args:
+        return args[0]
+    return None
+
+def _infer_chat_kind(coro_func):
+    owner = getattr(coro_func, "__self__", None)
+    if getattr(owner, "is_group", False):
+        return "group"
+    return None
 
 async def _safe_send(*args, **kwargs):
+    if not args:
+        return await terabox_queue.safe_send(*args, **kwargs)
+
+    coro_func = args[0]
+    name = getattr(coro_func, "__name__", "")
+    chat_id = kwargs.setdefault("chat_id", _infer_chat_id(coro_func, args[1:]))
+    kwargs.setdefault("chat_kind", _infer_chat_kind(coro_func))
+    kwargs.setdefault("include_chat_rate", name not in {"edit", "delete"})
+
+    notify_methods = {"respond", "reply", "send_file", "send_message"}
+    include_chat_rate = kwargs.get("include_chat_rate", True)
+    chat_kind = kwargs.get("chat_kind")
+    scope, wait, rate = terabox_queue.send_wait_info(chat_id, chat_kind, include_chat_rate)
+    if name in notify_methods and terabox_queue.should_send_rate_notice(chat_id, scope, wait):
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⏳ Message rate limit reached ({scope}: {rate:g} msg/sec). "
+                f"Kindly wait ~{int(wait) + 1}s and don't message again; "
+                "each new message can increase your wait time.",
+            )
+        except Exception:
+            pass
+
     return await terabox_queue.safe_send(*args, **kwargs)
 
 # — Configuration —————————————————————————————————————————————————————————————

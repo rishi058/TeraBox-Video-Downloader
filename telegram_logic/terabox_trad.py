@@ -24,16 +24,17 @@ async def process_terabox(event, surl: str) -> None:
     Users never need to re-send — queued requests auto-process.
     """
     # If currently in flood cooldown → queue immediately
-    rem = terabox_queue.flood_remaining()
+    rem = terabox_queue.flood_remaining(event.chat_id)
     if rem > 0:
         await terabox_queue.put(helper, event, surl)
         try:
             await event.respond(
                 f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
-                f"and will be processed automatically in ~{rem}s."
+                f"and will be processed automatically in ~{rem}s. Kindly wait and don't "
+                "message again; each new message can increase your wait time."
             )
         except FloodWaitError as e:
-            terabox_queue.update_flood_until(e.seconds)
+            terabox_queue.update_flood_until(e.seconds, event.chat_id)
         except Exception:
             pass
         return
@@ -44,12 +45,13 @@ async def process_terabox(event, surl: str) -> None:
             await helper(event, surl)
         except FloodWaitError as e:
             # Pipeline hit flood → set cooldown, queue, notify user
-            terabox_queue.update_flood_until(e.seconds)
+            terabox_queue.update_flood_until(e.seconds, event.chat_id)
             await terabox_queue.put(helper, event, surl)
             try:
                 await event.respond(
                     f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
-                    f"and will be processed automatically in ~{e.seconds}s."
+                    f"and will be processed automatically in ~{e.seconds}s. Kindly wait and don't "
+                    "message again; each new message can increase your wait time."
                 )
             except Exception:
                 pass
@@ -113,7 +115,9 @@ async def helper(event, surl: str) -> None:
     # — Phase 3: Download ——————————————————————————————————————————————————
     loop = asyncio.get_running_loop()
     dl_start = time.time()
-    dl_progress_cb = make_download_progress_cb(status, filename, size_str, loop, cancel_btn)
+    dl_progress_cb = make_download_progress_cb(
+        status, filename, size_str, loop, cancel_btn, safe_send=_safe_send, chat_id=chat_id
+    )
     try:
         filepath = await asyncio.to_thread(download_terabox_file, prepared, cancel_event, dl_progress_cb)
     except CancelledError:
@@ -163,7 +167,9 @@ async def helper(event, surl: str) -> None:
         f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
         buttons=cancel_btn,
     )
-    progress_cb = make_upload_progress_cb(status, filename, size_str, loop, cancel_btn)
+    progress_cb = make_upload_progress_cb(
+        status, filename, size_str, loop, cancel_btn, safe_send=_safe_send, chat_id=chat_id
+    )
     up_start = time.time()
     try:
         sent_video = await _cancellable(

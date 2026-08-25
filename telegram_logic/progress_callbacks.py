@@ -1,25 +1,37 @@
+import os
+import random
 import time
 import asyncio
 from .helpers import format_size
 
 # — Progress callback for Telethon uploads —————————————————————————————————————————
 
-def make_download_progress_cb(status_msg, filename, size_str, loop, cancel_btn=None):
+PROGRESS_UPDATE_INTERVAL = float(os.environ.get("TELEGRAM_PROGRESS_UPDATE_INTERVAL", "5"))
+PROGRESS_UPDATE_JITTER = float(os.environ.get("TELEGRAM_PROGRESS_UPDATE_JITTER", "2"))
+
+
+def _next_progress_delay() -> float:
+    jitter = random.uniform(-PROGRESS_UPDATE_JITTER, PROGRESS_UPDATE_JITTER)
+    return max(1.0, PROGRESS_UPDATE_INTERVAL + jitter)
+
+def make_download_progress_cb(status_msg, filename, size_str, loop, cancel_btn=None, safe_send=None, chat_id=None):
     """Create a progress callback for the download phase."""
-    last_update = [0.0]
+    next_update_at = [time.time() + random.uniform(0, PROGRESS_UPDATE_JITTER)]
 
     async def _update(text):
         try:
-            await status_msg.edit(text, buttons=cancel_btn)
+            if safe_send:
+                await safe_send(status_msg.edit, text, buttons=cancel_btn, chat_id=chat_id)
+            else:
+                await status_msg.edit(text, buttons=cancel_btn)
         except Exception:
             pass
 
     def callback(current, total):
         now = time.time()
-        # Update every 3 seconds, or when the transfer is complete (current == total)
-        if (now - last_update[0] < 5) and (current < total):
+        if (now < next_update_at[0]) and (current < total):
             return
-        last_update[0] = now
+        next_update_at[0] = now + _next_progress_delay()
         pct = current / total * 100 if total else 0
         downloaded = format_size(current)
         total_str = format_size(total) if total else size_str
@@ -33,22 +45,24 @@ def make_download_progress_cb(status_msg, filename, size_str, loop, cancel_btn=N
     return callback
 
 
-def make_upload_progress_cb(status_msg, filename, size_str, loop, cancel_btn=None):
+def make_upload_progress_cb(status_msg, filename, size_str, loop, cancel_btn=None, safe_send=None, chat_id=None):
     """Create a progress callback for Telethon file upload."""
-    last_update = [0.0]  # track last update time to avoid flooding
+    next_update_at = [time.time() + random.uniform(0, PROGRESS_UPDATE_JITTER)]
 
     async def _update(text):
         try:
-            await status_msg.edit(text, buttons=cancel_btn)
+            if safe_send:
+                await safe_send(status_msg.edit, text, buttons=cancel_btn, chat_id=chat_id)
+            else:
+                await status_msg.edit(text, buttons=cancel_btn)
         except Exception:
             pass
 
     def callback(current, total):
         now = time.time()
-        # Update every 3 seconds, or when the transfer is complete (current == total)
-        if (now - last_update[0] < 5) and (current < total):
+        if (now < next_update_at[0]) and (current < total):
             return
-        last_update[0] = now
+        next_update_at[0] = now + _next_progress_delay()
         pct = current / total * 100 if total else 0
         uploaded = format_size(current)
         text = (

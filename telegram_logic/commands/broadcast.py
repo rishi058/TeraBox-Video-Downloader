@@ -8,7 +8,7 @@ from telethon.tl.types import (
     MessageMediaDocument,
     MessageMediaWebPage,
 )
-from ..bot import bot
+from ..bot import bot, _safe_send
 from firebase_db.users import get_all_users
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,8 @@ async def _send_to(chat_id: int, reply_msg=None, text: str = None):
         if media is not None:
             # Photo, video, audio, document, sticker, voice, etc.
             caption = reply_msg.message or ""
-            await bot.send_file(
+            await _safe_send(
+                bot.send_file,
                 chat_id,
                 file=media,
                 caption=caption,
@@ -41,9 +42,9 @@ async def _send_to(chat_id: int, reply_msg=None, text: str = None):
             )
         else:
             # Plain text (potentially multiline)
-            await bot.send_message(chat_id, reply_msg.message, parse_mode="md")
+            await _safe_send(bot.send_message, chat_id, reply_msg.message, parse_mode="md")
     else:
-        await bot.send_message(chat_id, text, parse_mode="md")
+        await _safe_send(bot.send_message, chat_id, text, parse_mode="md")
 
 
 @bot.on(events.NewMessage(pattern=r"^/broadcast(?:\s+([\s\S]+))?$"))
@@ -86,7 +87,6 @@ async def cmd_broadcast(event):
                 text=inline_text if not reply_msg else None,
             )
             success_count += 1
-            await asyncio.sleep(0.3)  # Rate-limit protection
 
         except FloodWaitError as e:
             log.warning(f"FloodWait during broadcast, sleeping {e.seconds}s")
