@@ -2,6 +2,7 @@ import os
 import re
 import json
 import base64
+from urllib.parse import unquote
 import logging
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -184,14 +185,42 @@ def _fix_private_key(creds: dict) -> None:
     log.debug("Fixed private_key: replaced literal \\n with real newlines.")
 
 
+def _resolve_firestore_database_id() -> str | None:
+    """Normalize optional FIRESTORE_DATABASE_ID style overrides.
+
+    If unset, or set to default aliases (including URL-encoded), return None so
+    Firebase Admin uses its built-in default database routing.
+    """
+    raw = (
+        os.getenv("FIRESTORE_DATABASE_ID")
+        or os.getenv("GOOGLE_CLOUD_FIRESTORE_DATABASE_ID")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+
+    decoded = unquote(raw)
+    normalized = decoded.strip().strip('"').strip("'")
+    if normalized in {"(default)", "default", "%28default%29"}:
+        log.warning(
+            "Ignoring FIRESTORE database override=%r; using SDK default database.",
+            raw,
+        )
+        return None
+
+    return normalized
+
+
 # ── Initialize Firebase Admin SDK (only once) ──────────────────────────────────
 # Reads FIREBASE_SECRETS env-var → writes fb_secrets.json → loads from file.
 # This avoids all \n / PEM-escaping issues that plague in-memory dict loading.
 
 def _init_firebase() -> firestore.Client:
+    database_id = _resolve_firestore_database_id()
+
     if firebase_admin._apps:
         # Already initialized (e.g. during hot-reload / testing)
-        return firestore.client()
+        return firestore.client(database_id=database_id)
 
     module_dir = os.path.dirname(__file__)
     generated_path = os.path.join(module_dir, "fb_secrets.json")
@@ -225,7 +254,7 @@ def _init_firebase() -> firestore.Client:
             "Set FIREBASE_SECRETS env-var in .env."
         )
 
-    return firestore.client()
+    return firestore.client(database_id=database_id)
 
 
 db: firestore.Client = _init_firebase()
