@@ -4,4 +4,5 @@ requests
 python-dotenv
 fastapi
 uvicorn[standard]
-firebase-admin
+firebase-admin==6.6.0
+google-cloud-firestore==2.19.0

@@ -11,3 +11,4 @@ fb_secrets.json
 db_scripts
 runtime_cache.json
 runtime_cache.json.tmp
+VPS_access_guide.md
