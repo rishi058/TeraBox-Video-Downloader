@@ -1,20 +1,22 @@
-# TeraBox / Diskwala Video Downloader
+# TeraBox / Diskwala / Flezen Video Downloader
 
-Downloads full-length videos from **TeraBox** (and its mirror domains) and **Diskwala**, then delivers them directly through Telegram. Resolved source/download URLs are catalogued in Firebase for `/random`; Telegram storage-group message caching is no longer used.
+Downloads full-length videos from **TeraBox** (and its mirror domains), **Diskwala**, and **Flezen**, then delivers them directly through Telegram. Resolved source/download URLs are catalogued in Firebase for `/random`; Telegram storage-group message caching is no longer used.
 
 ---
 
 ## Features
 
-- **Auto-detect links**: Paste a TeraBox or Diskwala URL anywhere in a message; it auto-downloads according to your selected mode.
-- **Three download engines / four modes**:
+- **Auto-detect links**: Paste a TeraBox, Diskwala, or Flezen URL anywhere in a message; it auto-downloads according to your selected mode.
+- **Four download engines / five modes**:
   - **Traditional (`/get`)** — Budget-capped TS chunk collector relying on rotating cookies. *[Unstable — best for small files]*
   - **Experimental (`/exp`, `/exphd`)** — Fast extractor via a scraper proxy that resolves direct CDN links; `/exphd` targets HD. *[Recommended]*
   - **Diskwala (`/dw`)** — Resolves Diskwala share links via a scraper proxy and downloads the direct video. *[New]*
+  - **Flezen (`/fz`)** — Resolves Flezen share links via a scraper proxy and downloads the direct video. *[New]*
+- **`all` mode / `/all`**: Auto-detects TeraBox, Diskwala, or Flezen links — as a default mode (via `/settings`) or one-off via `/all <link>`. TeraBox links are routed through a separately persisted **TeraBox engine** preference (`get`/`exp`/`exphd`, default `exp`), switchable from `/settings` independently of the overall mode.
 - **Expanded TeraBox domain support** (`/exp`, `/exphd`): `terabox.com`, `1024terabox.com`, `teraboxapp.com`, `freeterabox.com`, `terabox.app`, `terabox.fun`, `4funbox.co/.com`, `mirrobox.com`, `nephobox.com`, `1024tera.com`, `momerybox.com`, `tibibox.com` (with optional `www.`), in both `{base}/<something>/{SURL}` and `{base}/{SURL}` URL shapes.
 - **Smart mode hints**: Sending a Diskwala link while in a TeraBox mode (or a TeraBox link while in `dw` mode) replies with the correct command / mode to switch to, instead of silently ignoring it.
 - **`/random`**: Selects a cached download URL, downloads it, and uploads it to the requesting user with live progress and transfer timings.
-- **`/settings`**: Switch the default auto-download mode (`get`, `exp`, `exphd`, `dw`).
+- **`/settings`**: Switch the default auto-download mode (`get`, `exp`, `exphd`, `dw`, `fz`, `all`) and, independently, the TeraBox engine used by `all` mode.
 - **`/op <msg>`**: Send feedback to the admin.
 - **Admin Commands**:
   - **`/recent`**: Show recent users interacting with the bot.
@@ -47,6 +49,8 @@ graph TD
     CMDS --> EXPHD["/exphd url — TeraBox (HD)"]
     CMDS --> GET["/get url — TeraBox (traditional)"]
     CMDS --> DW["/dw url — Diskwala"]
+    CMDS --> FZ["/fz url — Flezen"]
+    CMDS --> ALL["/all url — auto-detect"]
     CMDS --> RND["/random — random cached video"]
     CMDS --> SET["/settings — switch default mode"]
     CMDS --> OP["/op msg — feedback to admin"]
@@ -66,28 +70,32 @@ flowchart TD
     MODE -->|"exp"| ES["extract_all_terabox_url_exp()"]
     MODE -->|"exphd"| EHS["extract_all_terabox_url_exp()"]
     MODE -->|"dw"| DS["extract_all_diskwala_urls()"]
+    MODE -->|"fz"| FS["extract_all_flezen_urls()"]
 
     GS -->|"TeraBox link found"| GP["process_terabox()<br/>traditional pipeline"]
     ES -->|"TeraBox link found"| EP["process_terabox_experimental()"]
     EHS -->|"TeraBox link found"| EHP["process_terabox_experimental(is_hd=True)"]
     DS -->|"Diskwala link found"| DP["process_diskwala()"]
+    FS -->|"Flezen link found"| FP["process_flezen()"]
 
-    GS -->|"none, but Diskwala link present"| H1["Hint: use /dw or switch mode to dw"]
-    ES -->|"none, but Diskwala link present"| H1
-    EHS -->|"none, but Diskwala link present"| H1
-    DS -->|"none, but TeraBox link present"| H2["Hint: use /exp,/exphd,/get or switch mode"]
+    GS -->|"none, but Diskwala/Flezen link present"| H1["Hint: use /dw or /fz, or switch mode"]
+    ES -->|"none, but Diskwala/Flezen link present"| H1
+    EHS -->|"none, but Diskwala/Flezen link present"| H1
+    DS -->|"none, but TeraBox/Flezen link present"| H2["Hint: use /exp,/exphd,/get or /fz, or switch mode"]
+    FS -->|"none, but TeraBox/Diskwala link present"| H3["Hint: use /exp,/exphd,/get or /dw, or switch mode"]
 
     GS -->|"nothing relevant"| IGN["silently ignore"]
     ES --> IGN
     EHS --> IGN
     DS --> IGN
+    FS --> IGN
 ```
 
 > The same cross-type hint logic is repeated inside the explicit command handlers — e.g. `/dw <terabox-link>` points you at `/exp`, and `/exp <diskwala-link>` points you at `/dw`.
 
 ### 3. Low-level download pipeline
 
-`/exp`, `/exphd` and `/dw` share one pipeline (in `terabox_exp.py` / `diskwala.py`), differing only in the **metadata source**. `/get` follows an analogous path with the traditional chunk collector. All Telegram sends flow through the flood-aware queue, and every phase honours the inline **Cancel** button via a `threading.Event`.
+`/exp`, `/exphd`, `/dw`, and `/fz` share one pipeline (in `terabox_exp.py` / `diskwala.py` / `flezen.py`), differing only in the **metadata source**. `/get` follows an analogous path with the traditional chunk collector. All Telegram sends flow through the flood-aware queue, and every phase honours the inline **Cancel** button via a `threading.Event`.
 
 ```mermaid
 flowchart TD
@@ -100,9 +108,11 @@ flowchart TD
 
     META -->|"exp / exphd"| M1["get_video_info()<br/>TeraBox scraper proxy"]
     META -->|"dw"| M2["get_diskwala_info()<br/>Diskwala scraper proxy"]
+    META -->|"fz"| M3["get_flezen_info()<br/>Flezen scraper proxy"]
 
     M1 --> DL["download_terabox_file_experimental()<br/>multipart / HLS+ffmpeg / direct"]
     M2 --> DL
+    M3 --> DL
 
     DL --> DB["save source_url + download_url<br/>in Firestore"]
     DB --> SEND["send_file directly to user<br/>(caption: name, size, timings)"]
@@ -150,6 +160,7 @@ cache/get
 cache/exp
 cache/exphd
 cache/dw
+cache/fz
 ```
 
 Each mode document held a map of `hash_id -> {source_url, download_url}`.
@@ -174,6 +185,7 @@ cache/dw_h_<sha256>
 cache/exp_h_<sha256>
 cache/exphd_h_<sha256>
 cache/get_h_<sha256>
+cache/fz_h_<sha256>
 ```
 
 Each document contains `hash_id`, `mode`, `source_url`, `download_url`, and a stable `random_key` for `/random`.
@@ -204,6 +216,7 @@ cache/dw_000       ... cache/dw_0ff
 cache/exp_000      ... cache/exp_0ff
 cache/exphd_000    ... cache/exphd_0ff
 cache/get_000      ... cache/get_0ff
+cache/fz_000       ... cache/fz_0ff
 ```
 
 Each shard stores a bounded map:
@@ -230,7 +243,8 @@ shard_number = int(hash_id[2:10], 16) % 256
 - A direct lookup reads exactly one known shard.
 - `/random` can read one shard and choose an entry in memory.
 - No additional top-level collection is required.
-- `get`, `exp`, `exphd`, and `dw` use the same structure.
+- `get`, `exp`, `exphd`, `dw`, and `fz` use the same structure.
+- **Adding a new mode is additive, not a migration**: since every mode already lives in the same sharded `cache` collection, appending a new mode is just registering it in the `MODES` tuple. Its shard documents (e.g. `cache/fz_000`) are created lazily by the first write — no existing shard is read, rewritten, or deleted.
 - Write contention is distributed across 256 documents.
 - A complete four-mode maintenance scan requires at most 1,024 reads rather than one read per media item.
 
@@ -261,10 +275,11 @@ All schemas store CDN URLs that may expire. `/random` must handle failed downloa
 
 ### Telegram video thumbnails
 
-Every upload pipeline (`/get`, `/exp`, `/exphd`, `/dw`, and `/random`) prepares a Telegram-compatible JPEG preview:
+Every upload pipeline (`/get`, `/exp`, `/exphd`, `/dw`, `/fz`, and `/random`) prepares a Telegram-compatible JPEG preview:
 
 - TeraBox uses `list[0].thumbs.url1` (then `url2`/`icon`) when provided by the proxy.
 - Diskwala uses `fileInfo.thumb` when provided by the proxy.
+- Flezen's proxy response carries no thumbnail field, so previews always fall back to a local FFmpeg frame.
 - Provider images are resized to at most 320×320 and recompressed below 20 KB.
 - Missing or invalid provider images fall back to a random frame between 10% and 90% of the completed local video.
 - The `.jpg` is passed through Telethon's `thumb=` argument with explicit `DocumentAttributeVideo` duration and dimensions.
@@ -313,11 +328,49 @@ At a five-minute interval, an idle bot performs only **288 small metadata reads 
 #### Command behavior
 
 - `/random` selects directly from memory and performs no Firebase or provider-proxy lookup.
-- `/exp`, `/exphd`, and `/dw` check memory before calling their provider proxy.
+- `/exp`, `/exphd`, `/dw`, and `/fz` check memory before calling their provider proxy.
 - A valid cache hit downloads immediately and does not write to Firestore again.
 - If a cached signed URL has expired, the command calls its provider proxy once, retries the download, and refreshes Firestore and memory.
 - New cache entries update local memory immediately; other bot workers receive them through the versioned five-minute refresh.
 - Cached records can include `filename` and `file_size`, avoiding filename probes and allowing `/random` to display the actual media name.
+
+---
+
+## Incident Log: 2026-08-25 (Firestore `%28default%29` on VPS)
+
+### Symptom
+
+- Local run succeeded.
+- ARM VPS deployment failed with repeated Firestore errors:
+  - `400 Invalid database id %28default%29`
+  - Startup cache load fell back to JSON snapshot.
+
+### Investigation summary
+
+- Effective Firestore-related env vars for database override were empty on both local and VPS:
+  - `FIRESTORE_DATABASE_ID`
+  - `GOOGLE_CLOUD_FIRESTORE_DATABASE_ID`
+  - `FIRESTORE_DATABASE`
+  - `GOOGLE_FIRESTORE_DATABASE`
+- Both environments resolved `database_id=None` in app code.
+- But runtime client internals differed:
+  - Local database path: `projects/<project>/databases/(default)`
+  - VPS database path: `projects/<project>/databases/%28default%29`
+- This proved the failure was not from explicit override env vars, but from runtime dependency behavior in the deployed environment.
+
+### Resolution applied
+
+- Pinned Firebase libraries in `requirements.txt`:
+  - `firebase-admin==6.6.0`
+  - `google-cloud-firestore==2.19.0`
+- Kept defensive Firestore database-id normalization in `firebase_db/db.py`.
+- Redeployed container with fresh dependency install.
+
+### Prevention
+
+- Keep Firebase/Firestore dependencies pinned across local and production.
+- Avoid unpinned cloud SDK dependencies in production images.
+- During deploy verification, log and check the resolved Firestore database path at startup.
 
 #### Synchronization and collision safety
 
@@ -358,11 +411,15 @@ telegram_logic/
   terabox_trad.py              # Traditional (/get) pipeline
   terabox_exp.py               # Experimental (/exp, /exphd) pipeline
   diskwala.py                  # Diskwala (/dw) pipeline
+  flezen.py                    # Flezen (/fz) pipeline
+  auto_route.py                # Shared link auto-detect + dispatch (used by "all" mode and /all)
   commands/                    # Individual Telegram command handlers
     start.py                   # /start
     get.py                     # /get <url>
     experimental.py            # /exp and /exphd <url>
     diskwala.py                # /dw <url>
+    flezen.py                  # /fz <url>
+    all_mode.py                # /all <url> — auto-detect
     random.py                  # /random
     settings.py                # /settings (download-mode switch)
     opinion.py                 # /op <msg> (feedback to admin)
@@ -383,10 +440,13 @@ teraboxDL/                     # Experimental (/exp, /exphd) extractor
 diskwalaDL/                    # Diskwala (/dw) extractor
   public_api.py                # Diskwala proxy client + URL helpers (get_diskwala_info)
 
+flezen/                        # Flezen (/fz) extractor
+  public_api.py                # Flezen proxy client + URL helpers (get_flezen_info)
+
 firebase_db/                   # Firebase Firestore persistence
   db.py                        # Firestore client initialisation
-  users.py                     # User tracking + per-user mode (get/exp/exphd/dw)
-  cache.py                     # Firestore source/download URL catalogue
+  users.py                     # User tracking + per-user mode (get/exp/exphd/dw/fz/all) + terabox_mode (used by "all")
+  cache.py                     # Firestore source/download URL catalogue (get/exp/exphd/dw/fz)
 ```
 
 ---
@@ -398,7 +458,7 @@ firebase_db/                   # Firebase Firestore persistence
 - Python 3.11+
 - `ffmpeg` available on `PATH` (used to remux HLS `.ts` segments into `.mp4`)
 - A Firebase project with Firestore enabled (service-account credentials)
-- Access to the TeraBox and Diskwala scraper proxies (URLs + Diskwala API key)
+- Access to the TeraBox, Diskwala, and Flezen scraper proxies (URLs + API keys)
 
 ### 2. Install dependencies
 
@@ -427,6 +487,10 @@ PROXY_URL=http://<proxy-host>/v1
 DISKWALA_PROXY_URL=http://<proxy-host>/video
 DISKWALA_API_KEY=your_diskwala_api_key  # sent as the x-api-key request header
 
+# Flezen (/fz) scraper proxy
+FLEZEN_PROXY_URL=http://<proxy-host>/flezen/video
+FLEZEN_API_KEY=your_flezen_api_key      # sent as the x-api-key request header
+
 # Traditional (/get) cookies (browser Cookie header string)
 COOKIES1=browserid=...; TSID=...
 COOKIES2=...
@@ -437,6 +501,7 @@ COOKIES2=...
 - `FIREBASE_SECRETS` — the Firestore service-account JSON, collapsed to one line; persists users, modes, and the video cache.
 - `THIRD_PARTY_TERABOXDL_URL` / `PROXY_URL` — endpoints the experimental (`/exp`, `/exphd`) pipeline uses to resolve TeraBox links.
 - `DISKWALA_PROXY_URL` / `DISKWALA_API_KEY` — the Diskwala (`/dw`) proxy endpoint and its `x-api-key`.
+- `FLEZEN_PROXY_URL` / `FLEZEN_API_KEY` — the Flezen (`/fz`) proxy endpoint and its `x-api-key`.
 - `COOKIES1..N` — TeraBox session cookies for the traditional (`/get`) pipeline.
 
 ### 4. Add cookies (For Traditional Mode)

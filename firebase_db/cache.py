@@ -20,8 +20,8 @@ from .db import db
 
 log = logging.getLogger(__name__)
 
-MODE = Literal["get", "exp", "exphd", "dw"]
-MODES: tuple[MODE, ...] = ("get", "exp", "exphd", "dw")
+MODE = Literal["get", "exp", "exphd", "dw", "fz"]
+MODES: tuple[MODE, ...] = ("get", "exp", "exphd", "dw", "fz")
 CACHE_COLLECTION = "cache"
 SHARD_COUNT = 256
 META_DOCUMENT = "_meta"

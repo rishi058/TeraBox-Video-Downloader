@@ -18,8 +18,11 @@ from telegram_logic.bot import bot
 from telegram_logic.terabox_trad import process_terabox
 from telegram_logic.terabox_exp import process_terabox_experimental
 from telegram_logic.diskwala import process_diskwala
+from telegram_logic.flezen import process_flezen
+from telegram_logic.auto_route import process_auto
 from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url_exp
 from diskwalaDL.public_api import extract_all_diskwala_urls
+from flezen.public_api import extract_all_flezen_urls
 from firebase_db.users import track_user, get_user_mode
 from firebase_db.cache import (
     initialize_runtime_cache_async,
@@ -71,6 +74,24 @@ TERABOX_IN_DISKWALA_MODE = (
     "…or switch your default mode from /settings."
 )
 
+FLEZEN_IN_OTHER_MODE = (
+    "🔗 That looks like a **Flezen** link, but your current mode downloads a different source.\n\n"
+    "➡️ Use the **/fz** command:\n`/fz <link>`\n\n"
+    "…or switch your default mode to **fz** from /settings."
+)
+
+TERABOX_IN_FLEZEN_MODE = (
+    "🔗 That looks like a **TeraBox** link, but your current mode is **fz** (Flezen).\n\n"
+    "➡️ Use **/exp**, **/exphd** or **/get**:\n`/exp <link>`\n\n"
+    "…or switch your default mode from /settings."
+)
+
+DISKWALA_IN_FLEZEN_MODE = (
+    "🔗 That looks like a **Diskwala** link, but your current mode is **fz** (Flezen).\n\n"
+    "➡️ Use the **/dw** command:\n`/dw <link>`\n\n"
+    "…or switch your default mode from /settings."
+)
+
 # — Basic Message Handler ————————————————————————————————————————————————————————————————————
 
 @bot.on(events.NewMessage)
@@ -92,6 +113,8 @@ async def handle_message(event):
         if not surls:
             if extract_all_diskwala_urls(text):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
+            elif extract_all_flezen_urls(text):
+                await event.respond(FLEZEN_IN_OTHER_MODE)
             return  # silently ignore non-TeraBox messages
         try:
             log.info(f"Message redirected to [get] mode")
@@ -104,6 +127,8 @@ async def handle_message(event):
         if not terabox_url_list:
             if extract_all_diskwala_urls(text):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
+            elif extract_all_flezen_urls(text):
+                await event.respond(FLEZEN_IN_OTHER_MODE)
             return  # silently ignore non-TeraBox messages
         try:
             log.info(f"Message redirected to [exp] mode")
@@ -116,6 +141,8 @@ async def handle_message(event):
         if not terabox_url_list:
             if extract_all_diskwala_urls(text):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
+            elif extract_all_flezen_urls(text):
+                await event.respond(FLEZEN_IN_OTHER_MODE)
             return  # silently ignore non-TeraBox messages
         try:
             log.info(f"Message redirected to [exphd] mode")
@@ -128,10 +155,33 @@ async def handle_message(event):
         if not diskwala_url_list:
             if extract_all_terabox_url_exp(text):
                 await event.respond(TERABOX_IN_DISKWALA_MODE)
+            elif extract_all_flezen_urls(text):
+                await event.respond(FLEZEN_IN_OTHER_MODE)
             return  # silently ignore non-Diskwala messages
         try:
             log.info(f"Message redirected to [dw] mode")
             await asyncio.gather(*[process_diskwala(event, url) for url in diskwala_url_list])
+        except Exception as e:
+            log.error(f"Unhandled error in handle_message: {e}")
+
+    if mode == 'fz':
+        flezen_url_list = extract_all_flezen_urls(text)
+        if not flezen_url_list:
+            if extract_all_terabox_url_exp(text):
+                await event.respond(TERABOX_IN_FLEZEN_MODE)
+            elif extract_all_diskwala_urls(text):
+                await event.respond(DISKWALA_IN_FLEZEN_MODE)
+            return  # silently ignore non-Flezen messages
+        try:
+            log.info(f"Message redirected to [fz] mode")
+            await asyncio.gather(*[process_flezen(event, url) for url in flezen_url_list])
+        except Exception as e:
+            log.error(f"Unhandled error in handle_message: {e}")
+
+    if mode == 'all':
+        try:
+            log.info(f"Message redirected to [all] mode")
+            await process_auto(event, text)
         except Exception as e:
             log.error(f"Unhandled error in handle_message: {e}")
 
@@ -151,6 +201,8 @@ async def run_bot() -> None:
         BotCommand(command="exphd", description="[Experimental] Download HD TeraBox video"), 
         BotCommand(command="get", description="Download TeraBox video [Unstable]"),
         BotCommand(command="dw", description="Download Diskwala video"),
+        BotCommand(command="fz", description="Download Flezen video"),
+        BotCommand(command="all", description="Auto-detect link & download"),
         BotCommand(command="random", description="Get a random video"),
         BotCommand(command="settings", description="View Details"),
         BotCommand(command="op", description="Send feedback to admin"),

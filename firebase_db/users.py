@@ -31,7 +31,11 @@ log = logging.getLogger(__name__)
 
 # ── Types ──────────────────────────────────────────────────────────────────────
 
-MODE = Literal["get", "exp", "exphd", "dw"]
+MODE = Literal["get", "exp", "exphd", "dw", "fz", "all"]
+
+# Sub-preference used only while MODE == "all": which TeraBox engine to route
+# auto-detected TeraBox links through.
+TERABOX_MODE = Literal["get", "exp", "exphd"]
 
 # ── In-memory cache (reduces Firestore reads) ──────────────────────────────────
 # Structure: { str(chat_id): {"username": ..., "last_active": float, "mode": ...} }
@@ -156,6 +160,55 @@ def set_user_mode(chat_id: int, mode: MODE) -> bool:
         return True
     except Exception as e:
         log.error(f"[DB] set_user_mode failed for uid={uid}: {e}")
+        return False
+
+
+def get_user_terabox_mode(chat_id: int) -> TERABOX_MODE:
+    """
+    Return the user's preferred TeraBox engine (get/exp/exphd), used only
+    when their overall mode is "all" to route auto-detected TeraBox links.
+    Reads from in-memory cache first; falls back to Firestore on cold-start.
+    Default: "exp"
+    """
+    uid = str(chat_id)
+
+    if uid in _USERS_CACHE:
+        return _USERS_CACHE[uid].get("terabox_mode", "exp")
+
+    try:
+        snap = db.collection(_USERS_COLLECTION).document(uid).get()
+        if snap.exists:
+            data = snap.to_dict()
+            _USERS_CACHE[uid] = data
+            return data.get("terabox_mode", "exp")
+    except Exception as e:
+        log.error(f"[DB] get_user_terabox_mode failed for uid={uid}: {e}")
+
+    return "exp"  # Unknown user or DB error → default engine
+
+
+def set_user_terabox_mode(chat_id: int, terabox_mode: TERABOX_MODE) -> bool:
+    """
+    Persist the user's preferred TeraBox engine for "all" mode.
+    Single-field update on the same per-user document — no schema migration.
+
+    Returns True on success, False on DB error.
+    Raises no exceptions.
+    """
+    uid = str(chat_id)
+    try:
+        db.collection(_USERS_COLLECTION).document(uid).set(
+            {"terabox_mode": terabox_mode},
+            merge=True,  # Creates doc if absent; only touches "terabox_mode" field
+        )
+        if uid in _USERS_CACHE:
+            _USERS_CACHE[uid]["terabox_mode"] = terabox_mode
+        else:
+            _USERS_CACHE[uid] = {"terabox_mode": terabox_mode}
+        log.info(f"Set terabox_mode={terabox_mode} for user {uid}")
+        return True
+    except Exception as e:
+        log.error(f"[DB] set_user_terabox_mode failed for uid={uid}: {e}")
         return False
 
 
