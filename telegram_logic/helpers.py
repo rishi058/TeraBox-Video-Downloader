@@ -1,5 +1,8 @@
 import re
 
+# Generic URL detector — matches any http(s) link
+_GENERIC_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+
 # Regex to match TeraBox share URLs and extract the SURL
 TERA_URL_RE = re.compile(
     r"https?://(?:[\w.-]+\.)?[\w.-]+\.[a-z]{2,}"
@@ -20,7 +23,8 @@ _TERABOX_EXP_DOMAINS = (
     "terabox.com", "1024terabox.com", "teraboxapp.com", "freeterabox.com",
     "terabox.app", "terabox.fun", "4funbox.co", "4funbox.com",
     "mirrobox.com", "nephobox.com", "1024tera.com", "momerybox.com",
-    "tibibox.com",
+    "tibibox.com", "terasharefile.com", "teraboxshare.com",
+    "teraboxlink.com", "terafileshare.com", "terasharelink.com",
 )
 # Longest-first so e.g. "4funbox.com" is preferred over the "4funbox.co" prefix.
 _TERABOX_EXP_DOMAIN_ALT = "|".join(
@@ -28,7 +32,7 @@ _TERABOX_EXP_DOMAIN_ALT = "|".join(
 )
 
 TERA_EXP_URL_RE = re.compile(
-    r"https?://(?:www\.)?(?:" + _TERABOX_EXP_DOMAIN_ALT + r")"
+    r"https?://(?:[a-z0-9]+\.)*(?:" + _TERABOX_EXP_DOMAIN_ALT + r")"
     r"(?:"
     # Query-param form: /sharing/link?...surl=<surl>
     r"/(?:sharing/link|wap/share/filelist|share/link)\?[^\s#]*?surl=1?(?P<surl_param>[A-Za-z0-9_-]+)"
@@ -90,6 +94,11 @@ def extract_all_surls(text: str) -> list[str]:
             seen.add(surl)
             surls.append(surl)
     return surls
+
+
+def contains_url(text: str) -> bool:
+    """Return True if the text contains any http(s) URL."""
+    return bool(_GENERIC_URL_RE.search(text))
 
 
 def format_size(size_bytes: int) -> str:

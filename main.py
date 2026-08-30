@@ -20,7 +20,7 @@ from telegram_logic.terabox_exp import process_terabox_experimental
 from telegram_logic.diskwala import process_diskwala
 from telegram_logic.flezen import process_flezen
 from telegram_logic.auto_route import process_auto
-from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url_exp
+from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url_exp, contains_url
 from diskwalaDL.public_api import extract_all_diskwala_urls
 from flezen.public_api import extract_all_flezen_urls
 from firebase_db.users import track_user, get_user_mode
@@ -92,6 +92,10 @@ DISKWALA_IN_FLEZEN_MODE = (
     "…or switch your default mode from /settings."
 )
 
+URL_NOT_SUPPORTED = (
+    "❌ URL not supported, use /op cmd to request this support from Admin"
+)
+
 # — Basic Message Handler ————————————————————————————————————————————————————————————————————
 
 @bot.on(events.NewMessage)
@@ -115,7 +119,9 @@ async def handle_message(event):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
-            return  # silently ignore non-TeraBox messages
+            elif contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
+            return
         try:
             log.info(f"Message redirected to [get] mode")
             await asyncio.gather(*[process_terabox(event, surl) for surl in surls])
@@ -129,7 +135,9 @@ async def handle_message(event):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
-            return  # silently ignore non-TeraBox messages
+            elif contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
+            return
         try:
             log.info(f"Message redirected to [exp] mode")
             await asyncio.gather(*[process_terabox_experimental(event, surl) for surl in terabox_url_list])
@@ -143,7 +151,9 @@ async def handle_message(event):
                 await event.respond(DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
-            return  # silently ignore non-TeraBox messages
+            elif contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
+            return
         try:
             log.info(f"Message redirected to [exphd] mode")
             await asyncio.gather(*[process_terabox_experimental(event, surl, is_hd=True) for surl in terabox_url_list])
@@ -157,7 +167,9 @@ async def handle_message(event):
                 await event.respond(TERABOX_IN_DISKWALA_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
-            return  # silently ignore non-Diskwala messages
+            elif contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
+            return
         try:
             log.info(f"Message redirected to [dw] mode")
             await asyncio.gather(*[process_diskwala(event, url) for url in diskwala_url_list])
@@ -171,7 +183,9 @@ async def handle_message(event):
                 await event.respond(TERABOX_IN_FLEZEN_MODE)
             elif extract_all_diskwala_urls(text):
                 await event.respond(DISKWALA_IN_FLEZEN_MODE)
-            return  # silently ignore non-Flezen messages
+            elif contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
+            return
         try:
             log.info(f"Message redirected to [fz] mode")
             await asyncio.gather(*[process_flezen(event, url) for url in flezen_url_list])
@@ -181,7 +195,9 @@ async def handle_message(event):
     if mode == 'all':
         try:
             log.info(f"Message redirected to [all] mode")
-            await process_auto(event, text)
+            dispatched = await process_auto(event, text)
+            if not dispatched and contains_url(text):
+                await event.respond(URL_NOT_SUPPORTED)
         except Exception as e:
             log.error(f"Unhandled error in handle_message: {e}")
 
