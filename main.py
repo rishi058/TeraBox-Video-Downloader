@@ -14,7 +14,7 @@ from telethon.tl.types import (
     BotCommandScopePeer,
     BotCommandScopeUsers,
 )
-from telegram_logic.bot import bot
+from telegram_logic.bot import bot, send_media_notice
 from telegram_logic.terabox_trad import process_terabox
 from telegram_logic.terabox_exp import process_terabox_experimental
 from telegram_logic.diskwala import process_diskwala
@@ -34,6 +34,10 @@ from firebase_db.cache import (
 
 @bot.on(events.NewMessage)
 async def global_tracker(event):
+    # Ignore the bot's own outgoing notice/media messages to prevent recursion.
+    if event.out:
+        return
+
     username = None
 
     if getattr(event.sender, 'username', None):
@@ -45,6 +49,7 @@ async def global_tracker(event):
         track_user(event.chat_id, username)
     except Exception as e:
         log.error(f"[global_tracker] Unexpected error in track_user: {e}")
+    await send_media_notice(event)
     # Does not raise StopPropagation, allowing other handlers to execute
 
 import telegram_logic.commands  # registers all @bot.on(...) handlers  # noqa: F401

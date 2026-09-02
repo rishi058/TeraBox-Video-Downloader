@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from telethon import Button, events
+from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
 from firebase_db.cache import add_to_cache, get_random_cache_record, get_runtime_cache_stats
@@ -132,26 +133,31 @@ async def cmd_random(event):
         )
         raise events.StopPropagation
 
-    # Share the global download/upload limit with /exp, /exphd and /dw. This
-    # prevents a burst of /random calls from exhausting RAM, disk, bandwidth,
-    # or Telegram upload slots while still allowing bounded concurrency.
-    async with terabox_queue.semaphore:
-        await _deliver_random(event)
+    # Share the same fair, per-chat and global limits as link requests.
+    # /random is deliberately queued because it can download and upload media.
+    await terabox_queue.submit(_deliver_random, event, "/random")
     raise events.StopPropagation
 
 
-async def _deliver_random(event):
+async def _deliver_random(event, _queue_url: str = "/random"):
     waiting_status = None
     task_id = f"random:{event.message.id}"
     task_key = (event.chat_id, task_id)
-    cancel_event = threading.Event()
+    cancel_event = active_tasks.get(task_key)
+    if cancel_event is None:
+        cancel_event = threading.Event()
+        active_tasks[task_key] = cancel_event
+    elif cancel_event.is_set():
+        active_tasks.pop(task_key, None)
+        return
     cancel_btn = [[Button.inline("❌ Cancel", data=f"cancel:{task_id}")]]
     try:
         record = await asyncio.to_thread(get_random_cache_record)
     except Exception as exc:
         log.error("[/random] DB error: %s", exc)
         await event.respond("⚠️ **Database error.** Please try again in a moment.")
-        raise events.StopPropagation
+        active_tasks.pop(task_key, None)
+        return
 
     if not record and get_runtime_cache_stats()["loading"]:
         active_tasks[task_key] = cancel_event
@@ -161,7 +167,7 @@ async def _deliver_random(event):
             if cancel_event.is_set():
                 await _safe_send(waiting_status.edit, "🚫 Cancelled.")
                 active_tasks.pop(task_key, None)
-                raise events.StopPropagation
+                return
             await asyncio.sleep(0.5)
             record = get_random_cache_record()
             if record:
@@ -174,18 +180,19 @@ async def _deliver_random(event):
             active_tasks.pop(task_key, None)
         else:
             await event.respond("📭 No videos yet. Send a supported link first!")
-        raise events.StopPropagation
+            active_tasks.pop(task_key, None)
+        return
 
     if waiting_status:
         status = waiting_status
         await _safe_send(status.edit, "⏳ Fetching video information…", buttons=cancel_btn)
     else:
-        active_tasks[task_key] = cancel_event
         status = await _safe_send(event.respond, "⏳ Fetching video information…", buttons=cancel_btn)
     loop = asyncio.get_running_loop()
     total_start = time.time()
     work_dir = None
     preview = None
+    retry_for_flood = False
 
     try:
         info = await asyncio.to_thread(_resolve_media_info, record)
@@ -267,6 +274,7 @@ async def _deliver_random(event):
                         supports_streaming=True,
                         reply_to=event.message.id,
                         progress_callback=up_cb,
+                        max_retries=1,
                     ),
                     cancel_event,
                 )
@@ -294,14 +302,20 @@ async def _deliver_random(event):
             raise RuntimeError("Telegram upload did not return a message")
         up_time = time.time() - up_start
         total_time = time.time() - total_start
-        await _safe_send(
-            sent.edit,
-            f"📦 `{filename}`\n📐 Size: **{size_str}**\n\n"
-            f"⬇️ Download: **{format_duration(dl_time)}**\n"
-            f"📤 Upload: **{format_duration(up_time)}**\n"
-            f"⏱️ Total: **{format_duration(total_time)}**",
-        )
-        await _safe_send(status.delete)
+        try:
+            await _safe_send(
+                sent.edit,
+                f"📦 `{filename}`\n📐 Size: **{size_str}**\n\n"
+                f"⬇️ Download: **{format_duration(dl_time)}**\n"
+                f"📤 Upload: **{format_duration(up_time)}**\n"
+                f"⏱️ Total: **{format_duration(total_time)}**",
+            )
+        except Exception:
+            pass
+        try:
+            await _safe_send(status.delete)
+        except Exception:
+            pass
     except asyncio.CancelledError:
         log.info("Random delivery cancelled by user for task=%s", task_id)
         await _safe_send(status.edit, "🚫 Cancelled.")
@@ -407,27 +421,39 @@ async def _deliver_random(event):
                         preview.attributes(filename)
                         if preview else [DocumentAttributeFilename(filename)]
                     ),
-                    supports_streaming=True,
-                    reply_to=event.message.id,
-                    progress_callback=up_cb,
+                        supports_streaming=True,
+                        reply_to=event.message.id,
+                        progress_callback=up_cb,
+                        max_retries=1,
                 ),
                 cancel_event,
             )
             up_time = time.time() - up_start
             total_time = time.time() - total_start
-            await _safe_send(
-                sent.edit,
-                f"📦 `{filename}`\n📐 Size: **{size_str}**\n\n"
-                f"⬇️ Download: **{format_duration(dl_time)}**\n"
-                f"📤 Upload: **{format_duration(up_time)}**\n"
-                f"⏱️ Total: **{format_duration(total_time)}**",
-            )
-            await _safe_send(status.delete)
+            try:
+                await _safe_send(
+                    sent.edit,
+                    f"📦 `{filename}`\n📐 Size: **{size_str}**\n\n"
+                    f"⬇️ Download: **{format_duration(dl_time)}**\n"
+                    f"📤 Upload: **{format_duration(up_time)}**\n"
+                    f"⏱️ Total: **{format_duration(total_time)}**",
+                )
+            except Exception:
+                pass
+            try:
+                await _safe_send(status.delete)
+            except Exception:
+                pass
         except (CancelledError, asyncio.CancelledError):
             await _safe_send(status.edit, "🚫 Cancelled.")
+        except FloodWaitError:
+            raise
         except Exception as retry_exc:
             log.warning("Random URL refresh+retry also failed: %s", retry_exc)
             await _safe_send(status.edit, "⚠️ This random video is no longer available. Try again!")
+    except FloodWaitError:
+        retry_for_flood = True
+        raise
     except ValueError as exc:
         if "read less than" in str(exc):
             log.warning("Random upload file changed or became incomplete: %s", exc)
@@ -446,4 +472,5 @@ async def _deliver_random(event):
             preview.cleanup()
         if work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
-        active_tasks.pop(task_key, None)
+        if not retry_for_flood:
+            active_tasks.pop(task_key, None)

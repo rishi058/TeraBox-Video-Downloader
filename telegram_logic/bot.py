@@ -1,9 +1,9 @@
 import os
-import time 
 import threading
 import asyncio
 import logging
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -58,10 +58,15 @@ async def _safe_send(*args, **kwargs):
                 f"Kindly wait ~{int(wait) + 1}s and don't message again; "
                 "each new message can increase your wait time.",
             )
+        except FloodWaitError as exc:
+            terabox_queue.update_flood_until(exc.seconds, chat_id)
         except Exception:
             pass
 
-    return await terabox_queue.safe_send(*args, **kwargs)
+    result = await terabox_queue.safe_send(*args, **kwargs)
+    if name == "send_file":
+        schedule_message_deletion(result, chat_id)
+    return result
 
 # — Configuration —————————————————————————————————————————————————————————————
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -82,6 +87,52 @@ bot = TelegramClient(
     auto_reconnect=True,
     flood_sleep_threshold=0,
 )
+
+
+MEDIA_DELIVERY_NOTICE = (
+    "⚠️ **Media will be automatically deleted after 30 minutes.**\n"
+    "📤 **Forward it to your private groups.**"
+)
+MEDIA_AUTO_DELETE_SECONDS = max(
+    0, int(os.environ.get("TELEGRAM_MEDIA_AUTO_DELETE_SECONDS", "1800"))
+)
+
+
+async def _delete_media_after(message, chat_id) -> None:
+    await asyncio.sleep(MEDIA_AUTO_DELETE_SECONDS)
+    try:
+        await terabox_queue.safe_send(
+            message.delete,
+            chat_id=chat_id,
+            include_chat_rate=False,
+        )
+    except Exception as exc:
+        log.info("Could not auto-delete media in chat=%s: %s", chat_id, exc)
+
+
+def schedule_message_deletion(result, chat_id) -> None:
+    """Schedule deletion for each delivered media or notice message."""
+    if MEDIA_AUTO_DELETE_SECONDS <= 0:
+        return
+    messages = result if isinstance(result, (list, tuple)) else (result,)
+    for message in messages:
+        if hasattr(message, "delete"):
+            asyncio.create_task(_delete_media_after(message, chat_id))
+
+
+async def send_media_notice(event) -> None:
+    """Send one expiring delivery notice for an incoming user message."""
+    try:
+        notice = await terabox_queue.safe_send(
+            event.respond,
+            MEDIA_DELIVERY_NOTICE,
+            chat_id=event.chat_id,
+            chat_kind="group" if getattr(event, "is_group", False) else None,
+        )
+        schedule_message_deletion(notice, event.chat_id)
+    except Exception as exc:
+        log.info("Could not send media notice in chat=%s: %s", event.chat_id, exc)
+
 
 async def _cancellable(coro, cancel_event: threading.Event, poll_interval: float = 0.5):
     """

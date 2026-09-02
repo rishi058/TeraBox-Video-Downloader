@@ -19,42 +19,8 @@ log = logging.getLogger(__name__)
 
 #! ONLY PUBLIC API
 async def process_terabox(event, surl: str) -> None:
-    """
-    Entry point: process immediately, or queue if flood-gated.
-    Users never need to re-send — queued requests auto-process.
-    """
-    # If currently in flood cooldown → queue immediately
-    rem = terabox_queue.flood_remaining(event.chat_id)
-    if rem > 0:
-        await terabox_queue.put(helper, event, surl)
-        try:
-            await event.respond(
-                f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
-                f"and will be processed automatically in ~{rem}s. Kindly wait and don't "
-                "message again; each new message can increase your wait time."
-            )
-        except FloodWaitError as e:
-            terabox_queue.update_flood_until(e.seconds, event.chat_id)
-        except Exception:
-            pass
-        return
-
-    # Try processing normally under the semaphore
-    async with terabox_queue.semaphore:
-        try:
-            await helper(event, surl)
-        except FloodWaitError as e:
-            # Pipeline hit flood → set cooldown, queue, notify user
-            terabox_queue.update_flood_until(e.seconds, event.chat_id)
-            await terabox_queue.put(helper, event, surl)
-            try:
-                await event.respond(
-                    f"⏳ Bot overloaded! Your request for `{surl}` has been queued "
-                    f"and will be processed automatically in ~{e.seconds}s. Kindly wait and don't "
-                    "message again; each new message can increase your wait time."
-                )
-            except Exception:
-                pass
+    """Submit a request to the fair, bounded scheduler."""
+    await terabox_queue.submit(helper, event, surl)
 
 
 async def helper(event, surl: str) -> None:
@@ -63,8 +29,13 @@ async def helper(event, surl: str) -> None:
     task_key = (chat_id, surl)
     total_start = time.time()
 
-    cancel_event = threading.Event()
-    active_tasks[task_key] = cancel_event
+    cancel_event = active_tasks.get(task_key)
+    if cancel_event is None:
+        cancel_event = threading.Event()
+        active_tasks[task_key] = cancel_event
+    elif cancel_event.is_set():
+        active_tasks.pop(task_key, None)
+        return
 
     cancel_btn = [[Button.inline("❌ Cancel", data=f"cancel:{surl}")]]
 
@@ -180,6 +151,7 @@ async def helper(event, surl: str) -> None:
                 attributes=preview.attributes(filename) if preview else None,
                 supports_streaming=True, reply_to=event.message.id,
                 progress_callback=progress_cb,
+                max_retries=1,
             ), cancel_event,
         )
         up_time = time.time() - up_start
@@ -194,6 +166,11 @@ async def helper(event, surl: str) -> None:
         await _safe_send(status.edit, "🚫 Cancelled.")
         active_tasks.pop(task_key, None)
         return
+    except FloodWaitError:
+        # Let the scheduler defer and retry this request without consuming an
+        # active processing slot during Telegram's required wait.
+        _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
+        raise
     except Exception as e:
         log.error(f"Direct upload failed for surl={surl}: {e}")
         _cleanup_files(filepath, os.path.splitext(filepath)[0] + ".ts")
