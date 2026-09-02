@@ -14,10 +14,13 @@ import requests
 from telethon import Button, events
 from telethon.tl.types import DocumentAttributeFilename
 
-from firebase_db.cache import get_random_cache_record, get_runtime_cache_stats
+from firebase_db.cache import add_to_cache, get_random_cache_record, get_runtime_cache_stats
 from terabox.internal_helpers import _safe_filename
 from terabox.public_api import CancelledError, TeraBoxError
 from teraboxDL.public_api import download_terabox_file_experimental
+from teraboxDL.terabox_dl import get_video_info
+from diskwalaDL.public_api import get_diskwala_info
+from flezen.public_api import get_flezen_info
 from ..bot import _cancellable, _safe_send, active_tasks, bot, terabox_queue
 from ..helpers import format_duration, format_size
 from ..progress_callbacks import make_download_progress_cb, make_upload_progress_cb
@@ -29,6 +32,22 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 RANDOM_LIMIT_PER_MINUTE = int(os.environ.get("RANDOM_LIMIT_PER_MINUTE", "6"))
 RANDOM_LIMIT_WINDOW_SECONDS = 60
 _random_usage = defaultdict(deque)
+
+
+def _refresh_download_info(source_url: str, mode: str) -> dict | None:
+    """Call the correct proxy to get a fresh download URL based on cache mode.
+
+    Returns a dict with download_url/filename/size/thumbnail_url on success,
+    or None if the mode has no proxy (e.g. 'get').
+    """
+    if mode in ("exp", "exphd"):
+        return get_video_info(source_url, is_hd=(mode == "exphd"))
+    if mode == "dw":
+        return get_diskwala_info(source_url)
+    if mode == "fz":
+        return get_flezen_info(source_url)
+    # 'get' mode is native download — no proxy available
+    return None
 
 
 def _random_wait_seconds(user_id: int | None) -> int:
@@ -291,8 +310,124 @@ async def _deliver_random(event):
             log.info("Random download cancelled by user for task=%s", task_id)
             await _safe_send(status.edit, "🚫 Cancelled.")
             return
-        log.warning("Random URL download failed: %s", exc)
-        await _safe_send(status.edit, "⚠️ This random video is no longer available. Try again!")
+
+        # The cached download_url has expired. Try to refresh it via the proxy
+        # using the record's source_url, then retry the download once.
+        source_url = record.get("source_url")
+        record_mode = record.get("_mode", "exp")
+        if not source_url or record_mode == "get":
+            log.warning("Random URL download failed (no source_url or native mode to refresh): %s", exc)
+            await _safe_send(status.edit, "⚠️ This random video is no longer available. Try again!")
+            return
+
+        log.info("Random cached URL expired; refreshing via proxy for source=%s mode=%s", source_url, record_mode)
+        await _safe_send(status.edit, "♻️ Cached link expired. Refreshing metadata…", buttons=cancel_btn)
+        try:
+            refreshed_info = await asyncio.to_thread(_refresh_download_info, source_url, record_mode)
+            if not refreshed_info:
+                raise TeraBoxError(f"No proxy available for mode '{record_mode}'")
+            download_url = refreshed_info["download_url"]
+            filename = refreshed_info.get("filename") or filename
+            refreshed_size = int(refreshed_info.get("size") or 0)
+            thumbnail_url = refreshed_info.get("thumbnail_url")
+            expected_size = format_size(refreshed_size) if refreshed_size else "Unknown"
+
+            # Clean up the failed attempt's work_dir and create a fresh one
+            if work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            work_dir = tempfile.mkdtemp(prefix="random_", dir="storage")
+            disk_name = _safe_filename(filename) or "random_video.mp4"
+            if not disk_name.lower().endswith(".mp4"):
+                disk_name += ".mp4"
+            output_path = os.path.join(work_dir, disk_name)
+
+            await _safe_send(
+                status.edit,
+                f"📦 **{filename}**\n📐 Size: **{expected_size}**\n\n⬇️ Downloading… **0%**",
+                buttons=cancel_btn,
+            )
+            dl_start = time.time()
+            dl_cb = make_download_progress_cb(
+                status, filename, expected_size, loop, cancel_btn, safe_send=_safe_send, chat_id=event.chat_id
+            )
+            filepath = await asyncio.to_thread(
+                download_terabox_file_experimental,
+                download_url,
+                filename,
+                cancel_event,
+                dl_cb,
+                output_path,
+            )
+            dl_time = time.time() - dl_start
+
+            if cancel_event.is_set():
+                await _safe_send(status.edit, "🚫 Cancelled.")
+                return
+
+            file_size = os.path.getsize(filepath)
+            if file_size <= 0:
+                raise TeraBoxError("Downloaded file is empty")
+            size_str = format_size(file_size)
+
+            # Update the DB with the fresh download_url
+            await asyncio.to_thread(
+                add_to_cache, source_url, download_url, record_mode,
+                filename, file_size, thumbnail_url,
+            )
+            log.info("Refreshed download_url cached for source=%s mode=%s", source_url, record_mode)
+
+            # Continue with preview + upload (same as the happy path)
+            await _safe_send(status.edit, f"📦 **{filename}**\n\n🖼 Preparing video preview…", buttons=cancel_btn)
+            try:
+                preview = await prepare_video_preview(filepath, thumbnail_url)
+            except Exception as prev_exc:
+                log.warning("Random preview generation failed: %s", prev_exc)
+
+            if cancel_event.is_set():
+                await _safe_send(status.edit, "🚫 Cancelled.")
+                return
+
+            await _safe_send(
+                status.edit,
+                f"📦 **{filename}**\n📐 Size: **{size_str}**\n\n📤 Uploading… **0%**",
+                buttons=cancel_btn,
+            )
+            up_start = time.time()
+            up_cb = make_upload_progress_cb(
+                status, filename, size_str, loop, cancel_btn, safe_send=_safe_send, chat_id=event.chat_id
+            )
+            sent = await _cancellable(
+                _safe_send(
+                    bot.send_file,
+                    event.chat_id,
+                    filepath,
+                    caption=f"📦 `{filename}`\n📐 Size: **{size_str}**",
+                    thumb=preview.thumbnail_path if preview else None,
+                    attributes=(
+                        preview.attributes(filename)
+                        if preview else [DocumentAttributeFilename(filename)]
+                    ),
+                    supports_streaming=True,
+                    reply_to=event.message.id,
+                    progress_callback=up_cb,
+                ),
+                cancel_event,
+            )
+            up_time = time.time() - up_start
+            total_time = time.time() - total_start
+            await _safe_send(
+                sent.edit,
+                f"📦 `{filename}`\n📐 Size: **{size_str}**\n\n"
+                f"⬇️ Download: **{format_duration(dl_time)}**\n"
+                f"📤 Upload: **{format_duration(up_time)}**\n"
+                f"⏱️ Total: **{format_duration(total_time)}**",
+            )
+            await _safe_send(status.delete)
+        except (CancelledError, asyncio.CancelledError):
+            await _safe_send(status.edit, "🚫 Cancelled.")
+        except Exception as retry_exc:
+            log.warning("Random URL refresh+retry also failed: %s", retry_exc)
+            await _safe_send(status.edit, "⚠️ This random video is no longer available. Try again!")
     except ValueError as exc:
         if "read less than" in str(exc):
             log.warning("Random upload file changed or became incomplete: %s", exc)
