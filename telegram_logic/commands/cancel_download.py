@@ -29,4 +29,10 @@ async def handle_cancel(event):
         cancel_event.set()
         await event.answer("🚫 Cancelling this download...")
     else:
-        await event.answer("Nothing to cancel.")
+        # The task already completed (or was removed), so remove its stale
+        # status message and show the callback feedback to the user.
+        try:
+            await event.message.delete()
+        except Exception as exc:
+            log.info("Could not delete stale cancel message in chat=%s: %s", chat_id, exc)
+        await event.answer("Nothing to cancel.", alert=True)
