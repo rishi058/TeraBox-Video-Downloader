@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -32,6 +33,30 @@ from firebase_db.cache import (
 
 # — Global User Tracker ——————————————————————————————————————————————————————————————————
 
+MEDIA_COMMAND_PATTERN = re.compile(r"^/(?:random|all|get|exp|exphd|dw|fz)(?:@\S+)?(?:\s|$)", re.IGNORECASE)
+RANDOM_COMMAND_PATTERN = re.compile(r"^/random(?:@\S+)?$", re.IGNORECASE)
+
+
+def _is_media_request(text: str) -> bool:
+    """Return True only for /random or a supported media-link request."""
+    text = text.strip()
+    if RANDOM_COMMAND_PATTERN.fullmatch(text):
+        return True
+
+    has_supported_link = any((
+        extract_all_surls(text),
+        extract_all_terabox_url_exp(text),
+        extract_all_diskwala_urls(text),
+        extract_all_flezen_urls(text),
+    ))
+    if not has_supported_link:
+        return False
+
+    # A supported link in a regular message is processed by the selected mode.
+    # Command messages must use one of the media commands, so /op <link>, for
+    # example, does not receive a media-expiry notice.
+    return not text.startswith("/") or bool(MEDIA_COMMAND_PATTERN.match(text))
+
 @bot.on(events.NewMessage)
 async def global_tracker(event):
     # Ignore the bot's own outgoing notice/media messages to prevent recursion.
@@ -49,7 +74,8 @@ async def global_tracker(event):
         track_user(event.chat_id, username)
     except Exception as e:
         log.error(f"[global_tracker] Unexpected error in track_user: {e}")
-    await send_media_notice(event)
+    if _is_media_request(event.raw_text or ""):
+        await send_media_notice(event)
     # Does not raise StopPropagation, allowing other handlers to execute
 
 import telegram_logic.commands  # registers all @bot.on(...) handlers  # noqa: F401
