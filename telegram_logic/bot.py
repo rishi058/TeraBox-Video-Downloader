@@ -2,6 +2,7 @@ import os
 import threading
 import asyncio
 import logging
+import time
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
@@ -76,6 +77,10 @@ API_HASH = os.environ.get("API_HASH", "")
 # — Active-task tracking (for cancel) ————————————————————————————————————————————
 active_tasks: dict[tuple[int, str], threading.Event] = {}
 
+# — Media notice throttling (2-minute debounce per chat) ———————————————————————
+_media_notice_throttle: dict[int, float] = {}  # chat_id -> last_sent_timestamp
+MEDIA_NOTICE_THROTTLE_SECONDS = 120  # 2 minutes
+
 # — Bot Setup ————————————————————————————————————————————————————————————— 
 
 bot = TelegramClient(
@@ -121,7 +126,22 @@ def schedule_message_deletion(result, chat_id) -> None:
 
 
 async def send_media_notice(event) -> None:
-    """Send one expiring delivery notice for an incoming user message."""
+    """Send one expiring delivery notice for an incoming user message.
+    
+    Throttled to once per MEDIA_NOTICE_THROTTLE_SECONDS (2 minutes) per chat
+    to avoid redundant warnings when multiple URLs are sent in quick succession.
+    """
+    chat_id = event.chat_id
+    current_time = time.time()
+    last_sent = _media_notice_throttle.get(chat_id, 0)
+    
+    # Only send if throttle period has elapsed
+    if current_time - last_sent < MEDIA_NOTICE_THROTTLE_SECONDS:
+        return
+    
+    # Update throttle timestamp
+    _media_notice_throttle[chat_id] = current_time
+    
     try:
         notice = await terabox_queue.safe_send(
             event.respond,
