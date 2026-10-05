@@ -3,8 +3,16 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from dotenv import load_dotenv
+
+# Environment-backed module settings are evaluated during imports below.
+load_dotenv()
+
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from telethon import events
 from telethon.tl.functions.bots import SetBotCommandsRequest
@@ -30,9 +38,13 @@ from firebase_db.cache import (
     runtime_cache_refresh_loop,
     shutdown_runtime_cache,
 )
+from telegram_logic.webapp_routes import router as webapp_router
 
 # — Global User Tracker ——————————————————————————————————————————————————————————————————
 
+RANDOM_COMMAND_ENABLED = os.environ.get("RANDOM_COMMAND_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+# Diskwala links are handed to the mini app, so they never produce expiring media.
+OVERRIDE_DISKWALA = os.environ.get("OVERRIDE_DISKWALA", "false").strip().lower() in ("true", "1", "yes")
 MEDIA_COMMAND_PATTERN = re.compile(r"^/(?:random|all|get|exp|exphd|dw|fz)(?:@\S+)?(?:\s|$)", re.IGNORECASE)
 RANDOM_COMMAND_PATTERN = re.compile(r"^/random(?:@\S+)?$", re.IGNORECASE)
 
@@ -40,13 +52,13 @@ RANDOM_COMMAND_PATTERN = re.compile(r"^/random(?:@\S+)?$", re.IGNORECASE)
 def _is_media_request(text: str) -> bool:
     """Return True only for /random or a supported media-link request."""
     text = text.strip()
-    if RANDOM_COMMAND_PATTERN.fullmatch(text):
+    if RANDOM_COMMAND_ENABLED and RANDOM_COMMAND_PATTERN.fullmatch(text):
         return True
 
     has_supported_link = any((
         extract_all_surls(text),
         extract_all_terabox_url_exp(text),
-        extract_all_diskwala_urls(text),
+        [] if OVERRIDE_DISKWALA else extract_all_diskwala_urls(text),
         extract_all_flezen_urls(text),
     ))
     if not has_supported_link:
@@ -79,9 +91,6 @@ async def global_tracker(event):
     # Does not raise StopPropagation, allowing other handlers to execute
 
 import telegram_logic.commands  # registers all @bot.on(...) handlers  # noqa: F401
-
-from dotenv import load_dotenv
-load_dotenv()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 APP_ID = int(os.environ.get("APP_ID", "0"))
@@ -250,7 +259,7 @@ async def run_bot() -> None:
         BotCommand(command="dw", description="Download Diskwala video"),
         BotCommand(command="fz", description="Download Flezen video"),
         BotCommand(command="all", description="Auto-detect link & download"),
-        BotCommand(command="random", description="Get a random video"),
+        *([BotCommand(command="random", description="Get a random video")] if RANDOM_COMMAND_ENABLED else []),
         BotCommand(command="settings", description="View Details"),
         BotCommand(command="op", description="Send feedback to admin"),
     ]
@@ -291,7 +300,7 @@ async def run_bot() -> None:
     async def cache_lifecycle():
         cache_ready = await initialize_runtime_cache_async()
         if not cache_ready:
-            log.warning("Runtime media cache is empty; /random and cache hits are unavailable.")
+            log.warning("Runtime media cache is empty; cache hits are unavailable.")
         else:
             log.info("Runtime media cache is ready.")
         await runtime_cache_refresh_loop()
@@ -324,10 +333,27 @@ async def lifespan(app: FastAPI):
     log.info("Bye!")
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(webapp_router)
 
 @app.get("/ping")
 async def ping():
     return "pong"
+
+# — Mini-app frontend ——————————————————————————————————————————————————————————————————————
+MINI_APP_DIST = Path(__file__).parent / "mini-app" / "dist"
+
+if MINI_APP_DIST.is_dir():
+    @app.get("/mini-app", include_in_schema=False)
+    async def mini_app_redirect(request: Request):
+        target = "/mini-app/"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(url=target)
+
+    app.mount("/mini-app/", StaticFiles(directory=MINI_APP_DIST, html=True), name="mini-app")
+    log.info("Mini-app served from %s at /mini-app/", MINI_APP_DIST)
+else:
+    log.warning("Mini-app build not found at %s; run `npm run build` in mini-app/", MINI_APP_DIST)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))

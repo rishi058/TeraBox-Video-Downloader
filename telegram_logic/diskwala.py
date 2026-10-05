@@ -3,9 +3,10 @@ import time
 import threading
 import asyncio
 import logging
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlsplit, urlunsplit
 from telethon import Button
 from telethon.errors import FloodWaitError
+from telethon.tl.types import KeyboardButtonWebView
 
 from .bot import (
     bot, _cancellable, terabox_queue, _safe_send, active_tasks,
@@ -24,12 +25,81 @@ log = logging.getLogger(__name__)
 # Diskwala shares its own cache bucket / user mode.
 DW_MODE = "dw"
 
+# — Mini-app override —————————————————————————————————————————————————————————
+# The Diskwala proxy is unreliable; when enabled, hand the link to the mini app
+# instead of running the download pipeline.
+OVERRIDE_DISKWALA = os.environ.get("OVERRIDE_DISKWALA", "false").strip().lower() in ("true", "1", "yes")
+MINI_APP_URL = os.environ.get("MINI_APP_URL", "").strip()
+
+MINI_APP_NOTICE = (
+    "🎬 **Diskwala Player**\n\n"
+    "Diskwala downloads are temporarily unavailable, so this link opens in the "
+    "in-app player instead.\n\n"
+    "👇 Tap below to watch."
+)
+MINI_APP_UNAVAILABLE = (
+    "⚠️ Diskwala downloads are temporarily unavailable and no player is configured. "
+    "Please try again later."
+)
+MINI_APP_GROUP_NOTICE = (
+    "🔐 **Open this player from the bot's private chat**\n\n"
+    "Telegram does not provide secure Mini App authentication for this group URL. "
+    "Open the bot privately, then send the same `/dw <link>` command there."
+)
+
+
+def _mini_app_link(diskwala_url: str) -> str:
+    configured_url = urlsplit(MINI_APP_URL)
+    if (
+        configured_url.scheme != "https"
+        or not configured_url.netloc
+        or configured_url.username
+        or configured_url.password
+        or configured_url.fragment
+    ):
+        raise ValueError("MINI_APP_URL must be a public HTTPS URL")
+    path = configured_url.path or "/"
+    if not path.endswith("/"):
+        path = f"{path}/"
+    query = parse_qsl(configured_url.query, keep_blank_values=True)
+    query.append(("url", diskwala_url))
+    return urlunsplit((
+        configured_url.scheme,
+        configured_url.netloc,
+        path,
+        urlencode(query),
+        "",
+    ))
+
+
+async def _send_mini_app_button(event, diskwala_url: str) -> None:
+    try:
+        if getattr(event, "is_private", False):
+            target = _mini_app_link(diskwala_url)
+            buttons = [[KeyboardButtonWebView(text="▶️ Watch Video", url=target)]]
+            await _safe_send(event.respond, MINI_APP_NOTICE, buttons=buttons)
+            return
+
+        bot_user = await bot.get_me()
+        username = getattr(bot_user, "username", None)
+        buttons = [[Button.url("Open Bot Privately", f"https://t.me/{username}")]] if username else None
+        await _safe_send(event.respond, MINI_APP_GROUP_NOTICE, buttons=buttons)
+    except Exception as exc:
+        log.error(f"Could not send Diskwala mini-app button: {exc}")
+
 
 # — Heart Function —————————————————————————————————————————————————————————————
 
 #! ONLY PUBLIC API
 async def process_diskwala(event, diskwala_url: str) -> None:
     """Submit a request to the fair, bounded scheduler."""
+    if OVERRIDE_DISKWALA:
+        if not MINI_APP_URL:
+            log.error("OVERRIDE_DISKWALA is on but MINI_APP_URL is unset.")
+            await _safe_send(event.respond, MINI_APP_UNAVAILABLE)
+            return
+        await _send_mini_app_button(event, diskwala_url)
+        return
     await terabox_queue.submit(_dw_helper, event, diskwala_url)
 
 

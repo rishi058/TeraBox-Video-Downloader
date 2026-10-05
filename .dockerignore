@@ -13,6 +13,8 @@ venv/
 
 # Environment & secrets - NEVER include in image   
 .env
+mini-app/.env*
+!mini-app/.env.example
 firebase_secrets.json
 fb_secrets.json
 

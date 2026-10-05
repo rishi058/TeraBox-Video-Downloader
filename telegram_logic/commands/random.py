@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 RANDOM_LIMIT_PER_MINUTE = int(os.environ.get("RANDOM_LIMIT_PER_MINUTE", "6"))
 RANDOM_LIMIT_WINDOW_SECONDS = 60
+RANDOM_COMMAND_ENABLED = os.environ.get("RANDOM_COMMAND_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 _random_usage = defaultdict(deque)
 
 
@@ -124,6 +125,10 @@ def _resolve_media_info(record: dict) -> dict:
 @bot.on(events.NewMessage(pattern=r"^/random(?:@\S+)?$"))
 async def cmd_random(event):
     log.info("Received /random command from chat %s", event.chat_id)
+    if not RANDOM_COMMAND_ENABLED:
+        await _safe_send(event.respond, "🚫 The /random command is currently disabled.")
+        raise events.StopPropagation
+
     wait_seconds = _random_wait_seconds(event.sender_id or event.chat_id)
     if wait_seconds > 0:
         await _safe_send(
