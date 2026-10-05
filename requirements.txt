@@ -1,5 +1,5 @@
 # ffmpeg needed in system
-telethon
+telethon==1.43.2
 requests
 python-dotenv
 fastapi
