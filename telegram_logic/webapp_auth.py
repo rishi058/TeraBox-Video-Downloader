@@ -70,20 +70,24 @@ def _required_secret(value: str, label: str, minimum_length: int) -> bytes:
     return secret.encode("utf-8")
 
 
-def _optional_text(value: object, *, maximum_length: int) -> str | None:
+def _optional_text(value: object, *, field_name: str, maximum_length: int) -> str | None:
     if value is None or not isinstance(value, str):
         return None
     value = value.strip()
     if not value:
         return None
     if len(value) > maximum_length:
-        raise TelegramInitDataError("invalid Telegram user")
+        raise TelegramInitDataError(
+            f"Telegram user field {field_name} exceeds {maximum_length} characters"
+        )
     return value
 
 
 def _parse_telegram_user(value: object) -> TelegramUser:
     if not isinstance(value, Mapping):
-        raise TelegramInitDataError("invalid Telegram user")
+        raise TelegramInitDataError(
+            f"Telegram user payload must be an object, received {type(value).__name__}"
+        )
 
     raw_user_id = value.get("id")
     if isinstance(raw_user_id, str) and raw_user_id.isdigit():
@@ -96,7 +100,9 @@ def _parse_telegram_user(value: object) -> TelegramUser:
         or not isinstance(user_id, int)
         or user_id <= 0
     ):
-        raise TelegramInitDataError("invalid Telegram user")
+        raise TelegramInitDataError(
+            f"Telegram user id must be a positive integer, received type={type(raw_user_id).__name__}"
+        )
 
     normalized_first_name = (
         first_name.strip()[:256]
@@ -111,9 +117,15 @@ def _parse_telegram_user(value: object) -> TelegramUser:
     return TelegramUser(
         id=user_id,
         first_name=normalized_first_name,
-        last_name=_optional_text(value.get("last_name"), maximum_length=256),
-        username=_optional_text(value.get("username"), maximum_length=64),
-        language_code=_optional_text(value.get("language_code"), maximum_length=16),
+        last_name=_optional_text(
+            value.get("last_name"), field_name="last_name", maximum_length=256
+        ),
+        username=_optional_text(
+            value.get("username"), field_name="username", maximum_length=64
+        ),
+        language_code=_optional_text(
+            value.get("language_code"), field_name="language_code", maximum_length=16
+        ),
         is_premium=is_premium,
     )
 
@@ -182,10 +194,12 @@ def validate_telegram_init_data(
     ):
         raise TelegramInitDataError("expired initData")
 
+    if "user" not in params:
+        raise TelegramInitDataError("Telegram initData is missing the user field")
     try:
         raw_user = json.loads(params["user"])
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise TelegramInitDataError("invalid initData") from exc
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise TelegramInitDataError("Telegram initData user field is not valid JSON") from exc
 
     return VerifiedInitData(
         user=_parse_telegram_user(raw_user),
