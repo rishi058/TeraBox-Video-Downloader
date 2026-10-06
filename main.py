@@ -95,6 +95,8 @@ import telegram_logic.commands  # registers all @bot.on(...) handlers  # noqa: F
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 APP_ID = int(os.environ.get("APP_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
+# Kill switch: when false, the Telegram bot never starts; only the web/mini-app serves.
+BOT_ENABLED = os.environ.get("BOT_ENABLED", "true").strip().lower() not in ("false", "0", "no")
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO,
@@ -321,13 +323,18 @@ async def run_bot() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    bot_task = asyncio.create_task(run_bot())
+    bot_task = None
+    if BOT_ENABLED:
+        bot_task = asyncio.create_task(run_bot())
+    else:
+        log.warning("BOT_ENABLED is false; Telegram bot disabled. Serving web/mini-app only.")
     yield
-    bot_task.cancel()
-    try:
-        await bot_task
-    except asyncio.CancelledError:
-        pass
+    if bot_task is not None:
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
     if bot.is_connected():
         await bot.disconnect()
     log.info("Bye!")
