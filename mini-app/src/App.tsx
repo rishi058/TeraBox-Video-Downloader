@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   authenticateTelegramSession,
+  getAuthDiagnostics,
+  subscribeAuthDiagnostics,
+  type AuthDiagnostic,
   type AuthenticationState,
 } from './auth'
 import './App.css'
@@ -510,6 +513,7 @@ function VideoPlayer({ video }: { video: VideoInfo }) {
 function App() {
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.search))
   const [authentication, setAuthentication] = useState<AuthenticationState>({ status: 'checking' })
+  const [authDiagnostics, setAuthDiagnostics] = useState<AuthDiagnostic[]>(getAuthDiagnostics)
   const [authRetryKey, setAuthRetryKey] = useState(0)
   const [retryKey, setRetryKey] = useState(0)
   const [progress, setProgress] = useState<ProgressState>(INITIAL_PROGRESS)
@@ -519,6 +523,8 @@ function App() {
   // Guards against duplicate /v2/video calls (e.g. StrictMode double-mount); that call is costly.
   const resolvedKeyRef = useRef<string | null>(null)
   const inFlightRef = useRef<AbortController | null>(null)
+
+  useEffect(() => subscribeAuthDiagnostics(setAuthDiagnostics), [])
 
   useEffect(() => {
     let active = true
@@ -659,6 +665,22 @@ function App() {
             <button className="primary-button" type="button" onClick={retryAuthentication}>
               Check again
             </button>
+            <section className="diagnostic-panel" aria-label="Authentication diagnostics">
+              <h2>Authentication diagnostics</h2>
+              <p>Safe technical log — initData values and credentials are not shown.</p>
+              <div className="diagnostic-log">
+                {authDiagnostics.map((entry) => (
+                  <article key={entry.id} className="diagnostic-entry">
+                    <div>
+                      <time>{entry.time.slice(11, 23)}</time>
+                      <code>{entry.step}</code>
+                    </div>
+                    <strong>{entry.message}</strong>
+                    {entry.details && <pre>{JSON.stringify(entry.details, null, 2)}</pre>}
+                  </article>
+                ))}
+              </div>
+            </section>
           </div>
         )}
 

@@ -62,7 +62,7 @@ def _session_ttl() -> int:
 
 
 def _init_data_max_age() -> int:
-    return _env_int("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 600, minimum=60, maximum=86_400)
+    return _env_int("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 86_400, minimum=60, maximum=86_400)
 
 
 def _cookie_secure() -> bool:
@@ -132,7 +132,6 @@ def require_webapp_session(request: Request) -> WebAppSession:
 
 @router.post("/auth")
 async def authenticate(request: Request) -> Response:
-    require_same_origin(request)
     _rate_limit_auth(request)
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
     if not bot_token:
@@ -153,10 +152,25 @@ async def authenticate(request: Request) -> Response:
         )
     except TelegramInitDataError as exc:
         log.warning("Telegram Mini App authentication rejected: %s", exc)
-        raise HTTPException(status_code=403, detail="Telegram authentication failed.") from None
+        reason = str(exc).lower()
+        if "expired" in reason:
+            error_code = "INIT_DATA_EXPIRED"
+        elif "user" in reason:
+            error_code = "INIT_DATA_USER_INVALID"
+        else:
+            error_code = "INIT_DATA_SIGNATURE_OR_FORMAT_INVALID"
+        raise HTTPException(
+            status_code=403,
+            detail="Telegram authentication failed.",
+            headers={"X-Telegram-Auth-Error": error_code},
+        ) from None
     except ValueError as exc:
         log.error("Telegram Mini App authentication configuration error: %s", exc)
-        raise HTTPException(status_code=403, detail="Telegram authentication failed.") from None
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram authentication is not configured.",
+            headers={"X-Telegram-Auth-Error": "SERVER_AUTH_CONFIGURATION_INVALID"},
+        ) from None
 
     response = JSONResponse({"user": verified.user.to_public_dict(), "expires_in": ttl_seconds})
     response.headers["Cache-Control"] = "no-store"

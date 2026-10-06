@@ -2,6 +2,8 @@ export type TelegramWebApp = {
   initData: string
   ready: () => void
   expand: () => void
+  version?: string
+  platform?: string
   colorScheme?: 'light' | 'dark'
 }
 
