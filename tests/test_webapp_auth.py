@@ -49,6 +49,33 @@ class TelegramInitDataTests(unittest.TestCase):
         self.assertEqual(result.user.username, "test_user")
         self.assertEqual(result.auth_date, NOW)
 
+    def test_empty_optional_user_fields_are_accepted(self):
+        result = validate_telegram_init_data(
+            build_init_data(
+                user={
+                    "id": 42,
+                    "first_name": "Test",
+                    "last_name": "",
+                    "username": "",
+                    "language_code": "",
+                }
+            ),
+            BOT_TOKEN,
+            now=NOW,
+        )
+        self.assertIsNone(result.user.last_name)
+        self.assertIsNone(result.user.username)
+        self.assertIsNone(result.user.language_code)
+
+    def test_string_user_id_and_missing_name_are_normalized(self):
+        result = validate_telegram_init_data(
+            build_init_data(user={"id": "42"}),
+            BOT_TOKEN,
+            now=NOW,
+        )
+        self.assertEqual(result.user.id, 42)
+        self.assertEqual(result.user.first_name, "Telegram user")
+
     def test_tampered_data_is_rejected(self):
         value = build_init_data().replace("Test", "Changed")
         with self.assertRaises(TelegramInitDataError):

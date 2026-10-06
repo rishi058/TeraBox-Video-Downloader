@@ -132,6 +132,12 @@ def require_webapp_session(request: Request) -> WebAppSession:
 
 @router.post("/auth")
 async def authenticate(request: Request) -> Response:
+    log.info(
+        "POST /api/auth called from client=%s origin=%s content_length=%s",
+        request.client.host if request.client else "unknown",
+        request.headers.get("origin", "missing"),
+        request.headers.get("content-length", "unknown"),
+    )
     _rate_limit_auth(request)
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
     if not bot_token:
@@ -175,6 +181,7 @@ async def authenticate(request: Request) -> Response:
     response = JSONResponse({"user": verified.user.to_public_dict(), "expires_in": ttl_seconds})
     response.headers["Cache-Control"] = "no-store"
     _set_session_cookie(response, token, ttl_seconds)
+    log.info("POST /api/auth succeeded for Telegram user_id=%s", verified.user.id)
     return response
 
 

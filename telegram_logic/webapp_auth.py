@@ -71,12 +71,12 @@ def _required_secret(value: str, label: str, minimum_length: int) -> bytes:
 
 
 def _optional_text(value: object, *, maximum_length: int) -> str | None:
-    if value is None:
+    if value is None or not isinstance(value, str):
         return None
-    if not isinstance(value, str):
-        raise TelegramInitDataError("invalid Telegram user")
     value = value.strip()
-    if not value or len(value) > maximum_length:
+    if not value:
+        return None
+    if len(value) > maximum_length:
         raise TelegramInitDataError("invalid Telegram user")
     return value
 
@@ -85,17 +85,24 @@ def _parse_telegram_user(value: object) -> TelegramUser:
     if not isinstance(value, Mapping):
         raise TelegramInitDataError("invalid Telegram user")
 
-    user_id = value.get("id")
+    raw_user_id = value.get("id")
+    if isinstance(raw_user_id, str) and raw_user_id.isdigit():
+        user_id = int(raw_user_id)
+    else:
+        user_id = raw_user_id
     first_name = value.get("first_name")
     if (
         isinstance(user_id, bool)
         or not isinstance(user_id, int)
         or user_id <= 0
-        or not isinstance(first_name, str)
-        or not first_name.strip()
-        or len(first_name.strip()) > 256
     ):
         raise TelegramInitDataError("invalid Telegram user")
+
+    normalized_first_name = (
+        first_name.strip()[:256]
+        if isinstance(first_name, str) and first_name.strip()
+        else "Telegram user"
+    )
 
     is_premium = value.get("is_premium", False)
     if not isinstance(is_premium, bool):
@@ -103,7 +110,7 @@ def _parse_telegram_user(value: object) -> TelegramUser:
 
     return TelegramUser(
         id=user_id,
-        first_name=first_name.strip(),
+        first_name=normalized_first_name,
         last_name=_optional_text(value.get("last_name"), maximum_length=256),
         username=_optional_text(value.get("username"), maximum_length=64),
         language_code=_optional_text(value.get("language_code"), maximum_length=16),
@@ -284,4 +291,3 @@ def parse_webapp_session(
     except TelegramInitDataError as exc:
         raise WebAppSessionError("invalid session") from exc
     return WebAppSession(user=user, issued_at=issued_at, expires_at=expires_at)
-
