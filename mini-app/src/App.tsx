@@ -53,6 +53,22 @@ type ProgressState = {
   detail: string
 }
 
+type DiagnosticDetails = Record<string, string | number | boolean | null>
+
+type VideoDiagnostic = {
+  id: number
+  time: string
+  step: string
+  message: string
+  details?: DiagnosticDetails
+}
+
+type DiagnosticWriter = (
+  step: string,
+  message: string,
+  details?: DiagnosticDetails,
+) => void
+
 const INITIAL_PROGRESS: ProgressState = {
   percent: 10,
   title: 'Checking your link',
@@ -160,7 +176,30 @@ async function fetchWithTimeout(
   init: RequestInit,
   parentSignal: AbortSignal,
   timeoutLabel: string,
+  diagnostic: DiagnosticWriter,
 ): Promise<Response> {
+  const startedAt = performance.now()
+  let targetOrigin = 'invalid-url'
+  let targetPath = url
+  let targetProtocol = 'unknown'
+  try {
+    const parsedTarget = new URL(url, window.location.origin)
+    targetOrigin = parsedTarget.origin
+    targetPath = parsedTarget.pathname
+    targetProtocol = parsedTarget.protocol
+  } catch {
+    // The request itself will provide the final invalid URL error.
+  }
+  diagnostic('request-start', `${timeoutLabel} request started.`, {
+    method: init.method?.toString() ?? 'GET',
+    targetOrigin,
+    targetPath,
+    targetProtocol,
+    pageOrigin: window.location.origin,
+    pageProtocol: window.location.protocol,
+    mixedContent: window.location.protocol === 'https:' && targetProtocol === 'http:',
+    online: navigator.onLine,
+  })
   const controller = new AbortController()
   const abortFromParent = () => controller.abort(parentSignal.reason)
   const timeoutId = window.setTimeout(
@@ -175,19 +214,46 @@ async function fetchWithTimeout(
   }
 
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       credentials: 'same-origin',
       cache: 'no-store',
       signal: controller.signal,
     })
+    diagnostic('request-response', `${timeoutLabel} returned an HTTP response.`, {
+      status: response.status,
+      statusText: response.statusText || '(empty)',
+      ok: response.ok,
+      redirected: response.redirected,
+      responseOrigin: new URL(response.url).origin,
+      responsePath: new URL(response.url).pathname,
+      responseType: response.type,
+      contentType: response.headers.get('content-type'),
+      elapsedMs: Math.round(performance.now() - startedAt),
+    })
+    return response
   } catch (error) {
     if (parentSignal.aborted) {
       throw error
     }
     if (controller.signal.reason instanceof DOMException && controller.signal.reason.name === 'TimeoutError') {
+      diagnostic('request-error', `${timeoutLabel} timed out.`, {
+        errorType: 'TimeoutError',
+        elapsedMs: Math.round(performance.now() - startedAt),
+        targetOrigin,
+      })
       throw new AppError(`${timeoutLabel} took too long. Please try again.`, 'TIMEOUT')
     }
+    diagnostic('request-error', `${timeoutLabel} failed before an HTTP response was available.`, {
+      errorType: error instanceof Error ? error.name : typeof error,
+      errorMessage: error instanceof Error ? error.message.slice(0, 240) : 'Unknown error',
+      elapsedMs: Math.round(performance.now() - startedAt),
+      targetOrigin,
+      targetProtocol,
+      mixedContent: window.location.protocol === 'https:' && targetProtocol === 'http:',
+      online: navigator.onLine,
+      likelyCauses: 'CORS, TLS certificate, mixed content, DNS, or unreachable host',
+    })
     throw new AppError(
       'Could not reach the video service. Check your connection and try again.',
       'NETWORK_ERROR',
@@ -310,7 +376,21 @@ async function resolveVideo(
   sourceUrl: string,
   signal: AbortSignal,
   onProgress: (progress: ProgressState) => void,
+  diagnostic: DiagnosticWriter,
 ): Promise<VideoInfo> {
+  let sourceHost = 'invalid-url'
+  try {
+    sourceHost = new URL(sourceUrl).hostname
+  } catch {
+    // URL validation reports the user-facing error elsewhere.
+  }
+  diagnostic('video-flow', 'Video processing started.', {
+    sourceHost,
+    apiBase: API_BASE_URL,
+    apiKeyConfigured: Boolean(API_KEY),
+    browserOrigin: window.location.origin,
+    browserOnline: navigator.onLine,
+  })
   onProgress(INITIAL_PROGRESS)
   const metadataResponse = await fetchWithTimeout(
     `${API_BASE_URL}${METADATA_ENDPOINT}`,
@@ -321,10 +401,19 @@ async function resolveVideo(
     },
     signal,
     'Link check',
+    diagnostic,
   )
   await requireOk(metadataResponse, 'Link check')
   const descriptorValue = await parseJsonResponse(metadataResponse, 'Link check')
   const descriptor = asRecord(descriptorValue) as RequestDescriptor | null
+  diagnostic('metadata-parse', 'Metadata response parsed.', {
+    responseIsObject: Boolean(descriptor),
+    responseFields: descriptor ? Object.keys(descriptor).sort().join(', ') : '(not an object)',
+    method: typeof descriptor?.method === 'string' ? descriptor.method : '(missing)',
+    targetUrlPresent: typeof descriptor?.url === 'string',
+    requestHeadersPresent: Boolean(descriptor?.req_headers),
+    requestBodyType: typeof descriptor?.req_body,
+  })
   if (!descriptor || (typeof descriptor.method === 'string' && descriptor.method.toUpperCase() !== 'POST')) {
     throw new AppError('The server returned an invalid request method.', 'INVALID_SERVER_RESPONSE')
   }
@@ -334,6 +423,14 @@ async function resolveVideo(
   const requestBody = typeof descriptor.req_body === 'string'
     ? descriptor.req_body
     : JSON.stringify(descriptor.req_body ?? {})
+  const target = new URL(targetUrl)
+  diagnostic('provider-request', 'Prepared direct browser request to DiskWala provider.', {
+    targetOrigin: target.origin,
+    targetPath: target.pathname,
+    forwardedHeaders: [...targetHeaders.keys()].sort().join(', '),
+    requestBodyBytes: new Blob([requestBody]).size,
+    clientIpUsed: true,
+  })
 
   onProgress({
     percent: 62,
@@ -345,9 +442,16 @@ async function resolveVideo(
     { method: 'POST', headers: targetHeaders, body: requestBody },
     signal,
     'Video request',
+    diagnostic,
   )
   await requireOk(encryptedResponse, 'Video request')
   const encryptedPayload = await parseJsonResponse(encryptedResponse, 'Video request')
+  diagnostic('provider-parse', 'DiskWala provider response parsed.', {
+    responseType: Array.isArray(encryptedPayload) ? 'array' : typeof encryptedPayload,
+    responseFields: asRecord(encryptedPayload)
+      ? Object.keys(asRecord(encryptedPayload)!).sort().join(', ')
+      : '(not an object)',
+  })
   const encryptedBody = extractEncryptedBody(encryptedPayload)
 
   onProgress({
@@ -364,10 +468,17 @@ async function resolveVideo(
     },
     signal,
     'Decryption',
+    diagnostic,
   )
   await requireOk(decryptResponse, 'Decryption')
   const decryptedPayload = await parseJsonResponse(decryptResponse, 'Decryption')
   const video = normalizeVideoInfo(decryptedPayload)
+  diagnostic('video-ready', 'Decrypted video metadata validated successfully.', {
+    mediaType: video.type,
+    hasThumbnail: Boolean(video.thumb),
+    hasSize: video.size !== undefined,
+    videoHost: new URL(video.url).hostname,
+  })
 
   onProgress({
     percent: 100,
@@ -519,10 +630,24 @@ function App() {
   const [progress, setProgress] = useState<ProgressState>(INITIAL_PROGRESS)
   const [video, setVideo] = useState<VideoInfo | null>(null)
   const [error, setError] = useState<AppError | null>(null)
+  const [videoDiagnostics, setVideoDiagnostics] = useState<VideoDiagnostic[]>([])
   const [isLoading, setIsLoading] = useState(route.name === 'video')
   // Guards against duplicate /v2/video calls (e.g. StrictMode double-mount); that call is costly.
   const resolvedKeyRef = useRef<string | null>(null)
   const inFlightRef = useRef<AbortController | null>(null)
+  const videoDiagnosticSequenceRef = useRef(0)
+  const videoDiagnosticWriterRef = useRef<DiagnosticWriter>((step, message, details) => {
+    setVideoDiagnostics((entries) => [
+      ...entries.slice(-49),
+      {
+        id: ++videoDiagnosticSequenceRef.current,
+        time: new Date().toISOString(),
+        step,
+        message,
+        details,
+      },
+    ])
+  })
 
   useEffect(() => subscribeAuthDiagnostics(setAuthDiagnostics), [])
 
@@ -534,6 +659,7 @@ function App() {
         resolvedKeyRef.current = null
         setVideo(null)
         setError(null)
+        setVideoDiagnostics([])
         setProgress(INITIAL_PROGRESS)
         setIsLoading(true)
       }
@@ -551,6 +677,7 @@ function App() {
         setIsLoading(true)
         setVideo(null)
         setError(null)
+        setVideoDiagnostics([])
         setProgress(INITIAL_PROGRESS)
       }
       setRoute(nextRoute)
@@ -576,7 +703,12 @@ function App() {
     const controller = new AbortController()
     inFlightRef.current = controller
 
-    void resolveVideo(route.url, controller.signal, setProgress)
+    void resolveVideo(
+      route.url,
+      controller.signal,
+      setProgress,
+      videoDiagnosticWriterRef.current,
+    )
       .then((result) => {
         if (!controller.signal.aborted) {
           setVideo(result)
@@ -604,6 +736,7 @@ function App() {
     setIsLoading(true)
     setVideo(null)
     setError(null)
+    setVideoDiagnostics([])
     setProgress(INITIAL_PROGRESS)
     setRetryKey((key) => key + 1)
   }
@@ -754,6 +887,22 @@ function App() {
             <button className="primary-button" type="button" onClick={retry}>
               Try again
             </button>
+            <section className="diagnostic-panel" aria-label="Video request diagnostics">
+              <h2>Video request diagnostics</h2>
+              <p>Safe technical log — API keys, authorization values, request bodies, and URL queries are hidden.</p>
+              <div className="diagnostic-log">
+                {videoDiagnostics.map((entry) => (
+                  <article key={entry.id} className="diagnostic-entry">
+                    <div>
+                      <time>{entry.time.slice(11, 23)}</time>
+                      <code>{entry.step}</code>
+                    </div>
+                    <strong>{entry.message}</strong>
+                    {entry.details && <pre>{JSON.stringify(entry.details, null, 2)}</pre>}
+                  </article>
+                ))}
+              </div>
+            </section>
           </div>
         )}
 
