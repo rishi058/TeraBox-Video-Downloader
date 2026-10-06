@@ -8,7 +8,7 @@ import {
 } from './auth'
 import './App.css'
 
-const API_BASE_URL = 'http://dsm89t26p1mhjww7bkvldkwq.141.148.151.172.sslip.io'
+const API_BASE_URL = 'https://diskwala.141.148.151.172.sslip.io'
 const METADATA_ENDPOINT = '/v2/video'
 const DECRYPTION_ENDPOINT = '/decrypt'
 const API_KEY = 'f868d642d4f85459465462e09bfda7ec'
