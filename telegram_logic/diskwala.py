@@ -33,8 +33,6 @@ MINI_APP_URL = os.environ.get("MINI_APP_URL", "").strip()
 
 MINI_APP_NOTICE = (
     "🎬 **Diskwala Player**\n\n"
-    "Diskwala downloads are temporarily unavailable, so this link opens in the "
-    "in-app player instead.\n\n"
     "👇 Tap below to watch."
 )
 MINI_APP_UNAVAILABLE = (
@@ -77,7 +75,7 @@ async def _send_mini_app_button(event, diskwala_url: str) -> None:
         if getattr(event, "is_private", False):
             target = _mini_app_link(diskwala_url)
             buttons = [[KeyboardButtonWebView(text="▶️ Watch Video", url=target)]]
-            await _safe_send(event.respond, MINI_APP_NOTICE, buttons=buttons)
+            await _safe_send(event.respond, MINI_APP_NOTICE, buttons=buttons, reply_to=event.message.id)
             return
 
         bot_user = await bot.get_me()

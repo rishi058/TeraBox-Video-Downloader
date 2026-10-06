@@ -579,14 +579,6 @@ function App() {
       })
       .catch((caughtError: unknown) => {
         if (controller.signal.aborted) return
-        if (caughtError instanceof AppError && caughtError.code === 'ACCESS_DENIED') {
-          setAuthentication({
-            status: 'rejected',
-            message: 'Your Telegram session expired. Reopen the video from the bot.',
-          })
-          setIsLoading(false)
-          return
-        }
         setError(
           caughtError instanceof AppError
             ? caughtError

@@ -61,43 +61,42 @@ async function performAuthentication(): Promise<AuthenticationState> {
   const webApp = initializeTelegramWebApp()
 
   try {
+    const initData = webApp?.initData?.trim()
+    if (initData) {
+      const response = await fetchAuth('/api/auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ init_data: initData }),
+      })
+      if (response.status === 401 || response.status === 403) {
+        return {
+          status: 'rejected',
+          message: 'Your Telegram launch has expired or could not be verified. Reopen the video from the bot.',
+        }
+      }
+      if (!response.ok) {
+        return { status: 'error', message: 'Telegram authentication is temporarily unavailable.' }
+      }
+
+      const user = await parseAuthenticatedUser(response)
+      return user
+        ? { status: 'authenticated', user }
+        : { status: 'error', message: 'The server returned an invalid authentication response.' }
+    }
+
     const currentSession = await fetchAuth('/api/auth/me')
     if (currentSession.ok) {
       const user = await parseAuthenticatedUser(currentSession)
       if (user) return { status: 'authenticated', user }
       return { status: 'error', message: 'The server returned an invalid session.' }
     }
-    if (currentSession.status !== 401) {
-      return { status: 'error', message: 'Could not check your Telegram session.' }
-    }
-
-    const initData = webApp?.initData?.trim()
-    if (!initData) {
+    if (currentSession.status === 401) {
       return {
         status: 'unavailable',
         message: 'Open this video using the button inside the Telegram bot.',
       }
     }
-
-    const response = await fetchAuth('/api/auth', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ init_data: initData }),
-    })
-    if (response.status === 401 || response.status === 403) {
-      return {
-        status: 'rejected',
-        message: 'Your Telegram launch has expired or could not be verified. Reopen the video from the bot.',
-      }
-    }
-    if (!response.ok) {
-      return { status: 'error', message: 'Telegram authentication is temporarily unavailable.' }
-    }
-
-    const user = await parseAuthenticatedUser(response)
-    return user
-      ? { status: 'authenticated', user }
-      : { status: 'error', message: 'The server returned an invalid authentication response.' }
+    return { status: 'error', message: 'Could not check your Telegram session.' }
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError'
       ? 'Telegram authentication took too long. Please try again.'

@@ -151,7 +151,11 @@ async def authenticate(request: Request) -> Response:
             _session_secret(),
             ttl_seconds=ttl_seconds,
         )
-    except (TelegramInitDataError, ValueError):
+    except TelegramInitDataError as exc:
+        log.warning("Telegram Mini App authentication rejected: %s", exc)
+        raise HTTPException(status_code=403, detail="Telegram authentication failed.") from None
+    except ValueError as exc:
+        log.error("Telegram Mini App authentication configuration error: %s", exc)
         raise HTTPException(status_code=403, detail="Telegram authentication failed.") from None
 
     response = JSONResponse({"user": verified.user.to_public_dict(), "expires_in": ttl_seconds})
