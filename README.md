@@ -484,6 +484,7 @@ THIRD_PARTY_TERABOXDL_URL=https://www.teraboxdl.site/
 PROXY_URL=http://<proxy-host>/v1
 
 # Diskwala (/dw) scraper proxy
+DISKWALA_ENABLED=false                 # set true to enable /dw and Diskwala link handling
 DISKWALA_PROXY_URL=http://<proxy-host>/video
 DISKWALA_API_KEY=your_diskwala_api_key  # sent as the x-api-key request header
 
@@ -501,6 +502,7 @@ COOKIES2=...
 - `FIREBASE_SECRETS` — the Firestore service-account JSON, collapsed to one line; persists users, modes, and the video cache.
 - `THIRD_PARTY_TERABOXDL_URL` / `PROXY_URL` — endpoints the experimental (`/exp`, `/exphd`) pipeline uses to resolve TeraBox links.
 - `DISKWALA_PROXY_URL` / `DISKWALA_API_KEY` — the Diskwala (`/dw`) proxy endpoint and its `x-api-key`.
+- `DISKWALA_ENABLED` — defaults to `false`. When disabled, detected Diskwala links receive an unavailable notice and Diskwala cache shards are not loaded.
 - `FLEZEN_PROXY_URL` / `FLEZEN_API_KEY` — the Flezen (`/fz`) proxy endpoint and its `x-api-key`.
 - `COOKIES1..N` — TeraBox session cookies for the traditional (`/get`) pipeline.
 

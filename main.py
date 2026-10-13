@@ -26,7 +26,7 @@ from telethon.tl.types import (
 from telegram_logic.bot import bot, send_media_notice
 from telegram_logic.terabox_trad import process_terabox
 from telegram_logic.terabox_exp import process_terabox_experimental
-from telegram_logic.diskwala import process_diskwala
+from telegram_logic.diskwala import DISKWALA_ENABLED, DISKWALA_UNAVAILABLE, process_diskwala
 from telegram_logic.flezen import process_flezen
 from telegram_logic.auto_route import process_auto
 from telegram_logic.helpers import extract_all_surls, extract_all_terabox_url_exp, contains_url
@@ -58,7 +58,7 @@ def _is_media_request(text: str) -> bool:
     has_supported_link = any((
         extract_all_surls(text),
         extract_all_terabox_url_exp(text),
-        [] if OVERRIDE_DISKWALA else extract_all_diskwala_urls(text),
+        [] if (OVERRIDE_DISKWALA or not DISKWALA_ENABLED) else extract_all_diskwala_urls(text),
         extract_all_flezen_urls(text),
     ))
     if not has_supported_link:
@@ -158,7 +158,7 @@ async def handle_message(event):
         surls = extract_all_surls(text)
         if not surls:
             if extract_all_diskwala_urls(text):
-                await event.respond(DISKWALA_IN_TERABOX_MODE)
+                await event.respond(DISKWALA_UNAVAILABLE if not DISKWALA_ENABLED else DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
             elif contains_url(text):
@@ -174,7 +174,7 @@ async def handle_message(event):
         terabox_url_list = extract_all_terabox_url_exp(text)
         if not terabox_url_list:
             if extract_all_diskwala_urls(text):
-                await event.respond(DISKWALA_IN_TERABOX_MODE)
+                await event.respond(DISKWALA_UNAVAILABLE if not DISKWALA_ENABLED else DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
             elif contains_url(text):
@@ -190,7 +190,7 @@ async def handle_message(event):
         terabox_url_list = extract_all_terabox_url_exp(text)
         if not terabox_url_list:
             if extract_all_diskwala_urls(text):
-                await event.respond(DISKWALA_IN_TERABOX_MODE)
+                await event.respond(DISKWALA_UNAVAILABLE if not DISKWALA_ENABLED else DISKWALA_IN_TERABOX_MODE)
             elif extract_all_flezen_urls(text):
                 await event.respond(FLEZEN_IN_OTHER_MODE)
             elif contains_url(text):
@@ -212,6 +212,9 @@ async def handle_message(event):
             elif contains_url(text):
                 await event.respond(URL_NOT_SUPPORTED)
             return
+        if not DISKWALA_ENABLED:
+            await event.respond(DISKWALA_UNAVAILABLE)
+            return
         try:
             log.info(f"Message redirected to [dw] mode")
             await asyncio.gather(*[process_diskwala(event, url) for url in diskwala_url_list])
@@ -224,7 +227,7 @@ async def handle_message(event):
             if extract_all_terabox_url_exp(text):
                 await event.respond(TERABOX_IN_FLEZEN_MODE)
             elif extract_all_diskwala_urls(text):
-                await event.respond(DISKWALA_IN_FLEZEN_MODE)
+                await event.respond(DISKWALA_UNAVAILABLE if not DISKWALA_ENABLED else DISKWALA_IN_FLEZEN_MODE)
             elif contains_url(text):
                 await event.respond(URL_NOT_SUPPORTED)
             return
@@ -258,7 +261,7 @@ async def run_bot() -> None:
         BotCommand(command="exp", description="[Experimental] Download TeraBox video"), 
         BotCommand(command="exphd", description="[Experimental] Download HD TeraBox video"), 
         BotCommand(command="get", description="Download TeraBox video [Unstable]"),
-        BotCommand(command="dw", description="Download Diskwala video"),
+        *([BotCommand(command="dw", description="Download Diskwala video")] if DISKWALA_ENABLED else []),
         BotCommand(command="fz", description="Download Flezen video"),
         BotCommand(command="all", description="Auto-detect link & download"),
         *([BotCommand(command="random", description="Get a random video")] if RANDOM_COMMAND_ENABLED else []),

@@ -1,12 +1,16 @@
 from telethon import events, Button
 import logging
+import os
 from ..bot import bot
 from firebase_db.users import (
     set_user_mode, get_user_mode, set_user_terabox_mode, get_user_terabox_mode,
 )
 
 log = logging.getLogger(__name__)
-AVAILABLE_MODES = ["get", "exp", "exphd", "dw", "fz", "all"]
+DISKWALA_ENABLED = os.environ.get("DISKWALA_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+AVAILABLE_MODES = ["get", "exp", "exphd", "fz", "all"]
+if DISKWALA_ENABLED:
+    AVAILABLE_MODES.insert(3, "dw")
 TERABOX_SUBMODES = ["get", "exp", "exphd"]
 
 @bot.on(events.NewMessage(pattern="/settings"))
@@ -76,6 +80,10 @@ async def cmd_settings(event):
 async def cb_set_mode(event):
     mode = event.pattern_match.group(1).decode("utf-8")
     chat_id = event.chat_id
+
+    if mode == "dw" and not DISKWALA_ENABLED:
+        await event.answer("Diskwala unavailable at this moment.", alert=True)
+        raise events.StopPropagation
     
     log.info(f"Mode Switch to {mode}, for user {chat_id}")
 
@@ -98,9 +106,9 @@ async def cb_set_mode(event):
         f"➡️ **get** : Unstable [Use for small files]\n"
         f"➡️ **exp** : Reliable & Fast [Recommended]\n"
         f"➡️ **exphd** : For HD Videos [Slow]\n"
-        f"➡️ **dw** : Download Diskwala videos\n"
-        f"➡️ **fz** : Download Flezen videos\n"
-        f"➡️ **all** : Auto-detect TeraBox/Diskwala/Flezen links "
+        + (f"➡️ **dw** : Download Diskwala videos\n" if DISKWALA_ENABLED else "")
+        + f"➡️ **fz** : Download Flezen videos\n"
+        f"➡️ **all** : Auto-detect supported links "
         f"[TeraBox links use your **TeraBox engine** setting below]"
     )
     raise events.StopPropagation

@@ -21,7 +21,12 @@ from .db import db
 log = logging.getLogger(__name__)
 
 MODE = Literal["get", "exp", "exphd", "dw", "fz"]
-MODES: tuple[MODE, ...] = ("get", "exp", "exphd", "dw", "fz")
+DISKWALA_ENABLED = os.environ.get("DISKWALA_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+MODES: tuple[MODE, ...] = (
+    ("get", "exp", "exphd", "dw", "fz")
+    if DISKWALA_ENABLED
+    else ("get", "exp", "exphd", "fz")
+)
 CACHE_COLLECTION = "cache"
 SHARD_COUNT = 256
 META_DOCUMENT = "_meta"
@@ -480,14 +485,18 @@ def search_in_cache(source_url: str, user_mode: MODE) -> dict | None:
     return None
 
 
-def get_random_cache_record() -> dict | None:
+def get_random_cache_record(modes: tuple[MODE, ...] | None = None) -> dict | None:
     """Select a random item entirely in memory; performs no Firestore read."""
     with _LOCK:
-        if not _WEIGHTED_SHARDS:
+        eligible_shards = [
+            shard for shard in _WEIGHTED_SHARDS
+            if modes is None or shard[0] in modes
+        ]
+        if not eligible_shards:
             return None
         mode, shard_id, _ = random.choices(
-            _WEIGHTED_SHARDS,
-            weights=[count for _, _, count in _WEIGHTED_SHARDS],
+            eligible_shards,
+            weights=[count for _, _, count in eligible_shards],
             k=1,
         )[0]
         records = [record for record in _SHARDS[(mode, shard_id)].values() if _valid_record(record)]

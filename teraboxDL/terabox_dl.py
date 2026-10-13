@@ -2,6 +2,8 @@ import os
 import time
 import random
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin
 import requests
 
 log = logging.getLogger(__name__)
@@ -46,17 +48,90 @@ def _get_video_metadata(terabox_url: str) -> dict:
 
     return body
 
+_STREAM_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+}
+
+
+def _segment_size(segment_url: str) -> int:
+    """Return a segment's transfer size without downloading its contents."""
+    with requests.head(
+        segment_url,
+        headers=_STREAM_HEADERS,
+        allow_redirects=True,
+        timeout=15,
+    ) as response:
+        if response.ok:
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                return int(content_length)
+
+    # Some CDNs reject HEAD but report the complete size in Content-Range.
+    with requests.get(
+        segment_url,
+        headers={**_STREAM_HEADERS, "Range": "bytes=0-0"},
+        stream=True,
+        timeout=15,
+    ) as response:
+        response.raise_for_status()
+        content_range = response.headers.get("Content-Range", "")
+        if "/" in content_range:
+            return int(content_range.rsplit("/", 1)[1])
+        return int(response.headers.get("Content-Length", 0))
+
+
 def _get_file_size_bytes(stream_download_url: str) -> int:
+    """Return a direct file size or the summed transfer size of an HLS stream."""
     try:
-        response = requests.head(stream_download_url, allow_redirects=True)
-        content_length = response.headers.get('Content-Length')
-        if content_length is None:
-            raise ValueError("Server did not provide Content-Length header.")
+        with requests.head(
+            stream_download_url,
+            headers=_STREAM_HEADERS,
+            allow_redirects=True,
+            timeout=15,
+        ) as response:
+            if response.ok:
+                content_type = response.headers.get("Content-Type", "").lower()
+                content_length = response.headers.get("Content-Length")
+                if content_length and "mpegurl" not in content_type:
+                    return int(content_length)
+
+        # The provider's stream endpoint rejects HEAD with a small JSON error.
+        # Fetch the manifest instead of mistaking that error body's length for
+        # the video size.
+        with requests.get(
+            stream_download_url,
+            headers=_STREAM_HEADERS,
+            stream=True,
+            timeout=30,
+        ) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "mpegurl" not in content_type:
+                return int(response.headers.get("Content-Length", 0))
+            manifest = response.text
+            manifest_url = response.url
         
-        return int(content_length)
-    
-    except Exception as e:
-        print(f"Error: {e}")
+        segment_urls = [
+            urljoin(manifest_url, line.strip())
+            for line in manifest.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not segment_urls:
+            raise ValueError("HLS manifest has no media segments")
+
+        # Segment HEAD requests provide the stream's actual transfer size while
+        # avoiding the cost of downloading every segment during metadata lookup.
+        with ThreadPoolExecutor(max_workers=min(8, len(segment_urls))) as executor:
+            sizes = list(executor.map(_segment_size, segment_urls))
+        if any(size <= 0 for size in sizes):
+            raise ValueError("At least one HLS segment has no discoverable size")
+        return sum(sizes)
+    except Exception as exc:
+        log.warning("Could not determine stream file size: %s", exc)
         return 0
 
 

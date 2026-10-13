@@ -10,7 +10,7 @@ import logging
 
 from .terabox_trad import process_terabox
 from .terabox_exp import process_terabox_experimental
-from .diskwala import process_diskwala
+from .diskwala import DISKWALA_ENABLED, process_diskwala
 from .flezen import process_flezen
 from .helpers import extract_all_terabox_url_exp, extract_surl_exp
 from diskwalaDL.public_api import extract_all_diskwala_urls
@@ -42,7 +42,12 @@ async def process_auto(event, text: str) -> bool:
             tasks += [process_terabox_experimental(event, u, is_hd=True) for u in terabox_url_list]
         else:
             tasks += [process_terabox_experimental(event, u) for u in terabox_url_list]
-    tasks += [process_diskwala(event, u) for u in diskwala_url_list]
+    if diskwala_url_list:
+        if DISKWALA_ENABLED:
+            tasks += [process_diskwala(event, u) for u in diskwala_url_list]
+        else:
+            # Keep one unavailable reply for a message containing multiple links.
+            await process_diskwala(event, diskwala_url_list[0])
     tasks += [process_flezen(event, u) for u in flezen_url_list]
 
     await asyncio.gather(*tasks)

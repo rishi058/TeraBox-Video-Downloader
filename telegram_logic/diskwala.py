@@ -28,9 +28,11 @@ DW_MODE = "dw"
 # — Mini-app override —————————————————————————————————————————————————————————
 # The Diskwala proxy is unreliable; when enabled, hand the link to the mini app
 # instead of running the download pipeline.
+DISKWALA_ENABLED = os.environ.get("DISKWALA_ENABLED", "false").strip().lower() in ("true", "1", "yes")
 OVERRIDE_DISKWALA = os.environ.get("OVERRIDE_DISKWALA", "false").strip().lower() in ("true", "1", "yes")
 MINI_APP_URL = os.environ.get("MINI_APP_URL", "").strip()
 
+DISKWALA_UNAVAILABLE = "⚠️ Diskwala unavailable at this moment."
 MINI_APP_NOTICE = (
     "🎬 **Diskwala Player**\n\n"
     "👇 Tap below to watch."
@@ -91,6 +93,9 @@ async def _send_mini_app_button(event, diskwala_url: str) -> None:
 #! ONLY PUBLIC API
 async def process_diskwala(event, diskwala_url: str) -> None:
     """Submit a request to the fair, bounded scheduler."""
+    if not DISKWALA_ENABLED:
+        await _safe_send(event.respond, DISKWALA_UNAVAILABLE)
+        return
     if OVERRIDE_DISKWALA:
         if not MINI_APP_URL:
             log.error("OVERRIDE_DISKWALA is on but MINI_APP_URL is unset.")
