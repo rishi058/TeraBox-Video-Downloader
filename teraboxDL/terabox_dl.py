@@ -2,6 +2,7 @@ import os
 import time
 import random
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 import requests
@@ -10,6 +11,9 @@ log = logging.getLogger(__name__)
 
 THIRD_PARTY_TERABOXDL_URL = os.getenv("THIRD_PARTY_TERABOXDL_URL")
 PROXY_URL = os.getenv("PROXY_URL")
+TERABOXDL_TURNSTILE_SITE_KEY = os.getenv(
+    "TERABOXDL_TURNSTILE_SITE_KEY", "0x4AAAAAAFZJOCzA6dP3BIYH"
+)
 
 def _get_video_metadata(terabox_url: str) -> dict:
     if not PROXY_URL:
@@ -22,7 +26,20 @@ def _get_video_metadata(terabox_url: str) -> dict:
         "cmd": "request.post2",
         "base_url": f"{THIRD_PARTY_TERABOXDL_URL}",
         "post_endpoint": "api/proxy",
-        "post_json_body": f'{{"url": "{terabox_url}"}}'
+        "post_json_body": json.dumps({"url": terabox_url}),
+        "verification": {
+            "trigger": {
+                "status_code": 403,
+                "field": "code",
+                "equals": "CHALLENGE_REQUIRED",
+            },
+            "endpoint": "api/verify",
+            "site_key": TERABOXDL_TURNSTILE_SITE_KEY,
+            "token_field": "token",
+            "success_status": 200,
+            "success_field": "success",
+            "success_value": True,
+        },
     }
 
     # Random jitter delay to stagger concurrent requests and avoid shadow banning
@@ -36,17 +53,32 @@ def _get_video_metadata(terabox_url: str) -> dict:
         raise Exception(f"Proxy request failed with status code {response.status_code}")
 
     response_dict = response.json()
-    log.info(f"Time taken: {response_dict['time_taken']}, for proxy URL to return data")
-    
-    target_url_response = response_dict.get("target_url_response")
-    if not target_url_response:
-        raise Exception(f"Missing 'target_url_response' in proxy response: {response_dict}")
+    if not isinstance(response_dict, dict):
+        raise Exception("Proxy response must be a JSON object")
 
-    body = target_url_response.get("body")
-    if body is None:
-        raise Exception(f"Missing 'body' in target_url_response: {target_url_response}")
+    if response_dict.get("time_taken") is not None:
+        log.info(
+            "Time taken: %s, for proxy URL to return data",
+            response_dict["time_taken"],
+        )
 
-    return body
+    # The proxy formerly wrapped provider data as
+    # {"target_url_response": {"body": {...}}}. It now returns the provider
+    # response directly, where the file collection is in the top-level `list`.
+    metadata = response_dict.get("target_url_response", response_dict)
+    if isinstance(metadata, dict):
+        metadata = metadata.get("body", metadata)
+
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError as exc:
+            raise Exception("Proxy metadata response is not valid JSON") from exc
+
+    if not isinstance(metadata, dict):
+        raise Exception("Proxy metadata response must be a JSON object")
+
+    return metadata
 
 _STREAM_HEADERS = {
     "User-Agent": (
@@ -143,8 +175,17 @@ def get_video_info(terabox_url: str, is_hd: bool) -> dict:
     # with open("example_response.json", "w") as f:
     #     json.dump(data, f, indent=2)
 
+    if data.get("errno", 0) != 0:
+        raise Exception(
+            f"TeraBox metadata request failed: errno={data.get('errno')}"
+            f" ({data.get('errmsg', 'unknown error')})"
+        )
     if data.get("error"):
-        raise Exception(data.get("message", "Unknown error in getting video metadata"))
+        raise Exception(
+            data.get("message")
+            or (data["error"] if isinstance(data["error"], str) else None)
+            or "Unknown error in getting video metadata"
+        )
     if "list" not in data or not data["list"]:
         raise Exception("Video list not found or empty in metadata response")
 

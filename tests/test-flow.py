@@ -58,12 +58,23 @@ Exercises the diskwala proxy flow:
 """
 import sys
 
+from urllib.parse import quote
+
 import requests
 
 BASE_URL = "https://diskwala.141.148.151.172.sslip.io"
+# BASE_URL = "http://localhost:8001"
 API_KEY = "760d199dac79f5447ae61a5354ed37f9"
 VIDEO_URL = "https://www.diskwala.com/app/6a610deb06ba7ea03d7ad619"
 TIMEOUT = 30
+
+# The upstream np_lelo call is routed through the VPS egress proxy below
+# (requests appear to originate from the VPS's IP), since it transparently
+# forwards method/headers/body to the target URL and returns the raw response.
+PROXY_ENABLE = False
+PROXY_BASE_URL = "https://proxy.141.148.151.172.sslip.io"
+PROXY_KEY = "779c070284bc38358b746ec57f932adb8bda96d9bce739fc61451210d803903b"
+PROXY_BACKEND = "vpn-rotate"
 
 
 def sign_request(video_url: str) -> dict:
@@ -78,13 +89,28 @@ def sign_request(video_url: str) -> dict:
 
 
 def send_upstream(signed: dict) -> dict:
-    resp = requests.request(
-        signed["method"],
-        signed["url"],
-        headers=signed["req_headers"],
-        data=signed["req_body"].encode("utf-8"),
-        timeout=TIMEOUT,
-    )
+    if PROXY_ENABLE:
+        # Route through VPS proxy
+        proxy_url = (
+            f"{PROXY_BASE_URL}/{PROXY_KEY}/{PROXY_BACKEND}/fetch"
+            f"?url={quote(signed['url'], safe='')}"
+        )
+        resp = requests.request(
+            signed["method"],
+            proxy_url,
+            headers=signed["req_headers"],
+            data=signed["req_body"].encode("utf-8"),
+            timeout=TIMEOUT,
+        )
+    else:
+        # Direct call to upstream URL
+        resp = requests.request(
+            signed["method"],
+            signed["url"],
+            headers=signed["req_headers"],
+            data=signed["req_body"].encode("utf-8"),
+            timeout=TIMEOUT,
+        )
     resp.raise_for_status()
     return resp.json()
 
@@ -109,7 +135,8 @@ def main() -> int:
     signed = sign_request(video_url)
     print(signed)
 
-    print(f"\n[2/3] {signed['method']} {signed['url']} (upstream)")
+    proxy_info = "(upstream, via VPS proxy)" if PROXY_ENABLE else "(upstream, direct call)"
+    print(f"\n[2/3] {signed['method']} {signed['url']} {proxy_info}")
     upstream_resp = send_upstream(signed)
     print(upstream_resp)
 
